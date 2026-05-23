@@ -1,7 +1,8 @@
 PYTHON      := python3
 MENU_BAR_APP = menu-bar/.build/TeamRecorderBar.app
+DIST_DIR     = dist
 
-.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install
+.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install dist
 
 run:
 	$(PYTHON) teams_recorder_v2.py
@@ -52,3 +53,14 @@ menu-bar-install: menu-bar
 	@cp -r "$(MENU_BAR_APP)" /Applications/
 	@echo "  ✓  Installed to /Applications/TeamRecorderBar.app"
 	@open /Applications/TeamRecorderBar.app
+
+dist: menu-bar
+	@mkdir -p "$(DIST_DIR)"
+	@rm -f "$(DIST_DIR)/TeamRecorder.zip"
+	@rm -rf "$(DIST_DIR)/TeamRecorderBar.app"
+	@cp -r "$(MENU_BAR_APP)" "$(DIST_DIR)/"
+	@(cd "$(DIST_DIR)" && zip -qr "TeamRecorder.zip" "TeamRecorderBar.app")
+	@rm -rf "$(DIST_DIR)/TeamRecorderBar.app"
+	@echo "  ⚠  $(DIST_DIR)/TeamRecorder.zip — LOCAL MACHINE ONLY"
+	@echo "     The .app embeds an absolute path to teams_recorder_v2.py on this machine."
+	@echo "     It will NOT work on a teammate's machine. See packaging/README.md."

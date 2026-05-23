@@ -8,49 +8,72 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     static let shared = SetupWindowController()
 
     private var currentStep = 0
+    /// ป้องกัน recursion: windowWillClose → completeSetupAndStartWatcher → close → windowWillClose
+    private var completingSetup = false
 
     // UI refs — set in buildUI(), safe to use after init
-    private var stepLabel:      NSTextField!
-    private var iconLabel:      NSTextField!
-    private var titleLabel:     NSTextField!
-    private var descLabel:      NSTextField!
-    private var statusDot:      NSTextField!
-    private var statusText:     NSTextField!
-    private var grantButton:    NSButton!
-    private var settingsButton: NSButton!
-    private var checkButton:    NSButton!
-    private var continueButton: NSButton!
+    private var stepLabel:        NSTextField!
+    private var iconLabel:        NSTextField!
+    private var titleLabel:       NSTextField!
+    private var descLabel:        NSTextField!
+    private var instructionsBox:  NSView!
+    private var instructionsLabel: NSTextField!
+    private var statusDot:        NSTextField!
+    private var statusText:       NSTextField!
+    private var primaryButton:    NSButton!   // single action; title/action change by step+state
+    private var relaunchButton:   NSButton!   // step 0 only: "Relaunch App"
+    private var checkLink:        NSButton!   // recessed "↺ Check Again"
+    private var skipButton:       NSButton!   // bottom-left "Skip for Now"
+    private var continueButton:   NSButton!   // bottom-right "Continue →" / "Finish"
 
     // MARK: — Step data
 
     private struct StepInfo {
-        let icon: String; let title: String; let desc: String; let pane: String
+        let icon:         String
+        let title:        String
+        let desc:         String
+        let pane:         String
+        let instructions: String   // shown in tinted instructions box
+        let grantsInApp:  Bool     // true = mic/calendar can show in-app dialog
     }
 
     private let steps: [StepInfo] = [
-        StepInfo(icon: "🖥",
-                 title: "Screen Recording",
-                 desc:  "Required to capture system audio from Microsoft Teams. "
-                      + "Without this, no audio will be recorded.",
-                 pane:  "Privacy_ScreenCapture"),
-        StepInfo(icon: "🎙",
-                 title: "Microphone",
-                 desc:  "Required to record your own voice during meetings. "
-                      + "System audio is still captured if this is skipped.",
-                 pane:  "Privacy_Microphone"),
-        StepInfo(icon: "📅",
-                 title: "Calendar Access",
-                 desc:  "Used to name recordings after the meeting title from Apple Calendar. "
-                      + "Full Access is required (not Write Only). "
-                      + "Recordings are saved as \"Teams Meeting\" if this is skipped.",
-                 pane:  "Privacy_Calendars"),
+        StepInfo(
+            icon: "🖥",
+            title: "Screen Recording",
+            desc: "Required to capture system audio from Microsoft Teams.",
+            pane: "Privacy_ScreenCapture",
+            instructions: "1. Click \"Open System Settings\" below\n"
+                        + "2. Find Team Recorder — enable the toggle\n"
+                        + "3. Click \"Relaunch App\" to apply\n"
+                        + "   (macOS requires a relaunch after enabling this permission)",
+            grantsInApp: false
+        ),
+        StepInfo(
+            icon: "🎙",
+            title: "Microphone",
+            desc: "Required to record your own voice during meetings.",
+            pane: "Privacy_Microphone",
+            instructions: "Click \"Grant Access\" — macOS will show a popup.\n"
+                        + "Click Allow in the popup.",
+            grantsInApp: true
+        ),
+        StepInfo(
+            icon: "📅",
+            title: "Calendar Access",
+            desc: "Used to name recordings after the meeting title.",
+            pane: "Privacy_Calendars",
+            instructions: "Click \"Grant Access\" — choose Full Access in the popup.\n"
+                        + "(Write Only is not enough — recordings will be named \"Teams Meeting\")",
+            grantsInApp: true
+        ),
     ]
 
     // MARK: — Init
 
     private init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 330),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
             styleMask:   [.titled, .closable],
             backing:     .buffered,
             defer:       false
@@ -67,12 +90,11 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: — NSWindowDelegate
 
-    /// ถ้าผู้ใช้กด close button โดยไม่ได้กด Finish — ถือว่า Skip
-    /// ตั้งค่า setupCompleted แล้วเริ่ม watcher เพื่อไม่ให้ค้างอยู่โดยไม่ทำงาน
+    /// Fallback for the red-close-button path — starts watcher so the app isn't stuck idle.
+    /// `completingSetup` guard prevents re-entry when we call close() ourselves.
     func windowWillClose(_ notification: Notification) {
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
-            UserDefaults.standard.set(true, forKey: "setupCompleted")
-            WatcherManager.shared.autoStartIfNeeded()
+            completeSetupAndStartWatcher(closeWindow: false)   // already closing
         }
     }
 
@@ -93,39 +115,86 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    // MARK: — Exit helper (single path for all completion/skip routes)
+
+    /// ทุก path ที่ออกจาก Setup ใช้ helper นี้เท่านั้น — ป้องกัน recursion และ duplicate watcher start
+    private func completeSetupAndStartWatcher(closeWindow: Bool = true) {
+        guard !completingSetup else { return }
+        completingSetup = true
+        UserDefaults.standard.set(true, forKey: "setupCompleted")
+        WatcherManager.shared.autoStartIfNeeded()
+        if closeWindow {
+            window?.close()   // triggers windowWillClose — guard prevents re-entry
+        }
+        completingSetup = false
+    }
+
     // MARK: — UI construction
 
     private func buildUI() {
         guard let content = window?.contentView else { return }
         let pad: CGFloat = 24
 
-        // Labels
-        stepLabel   = makeLabel("",   size: 11, color: .secondaryLabelColor)
-        iconLabel   = makeLabel("",   size: 28)
-        titleLabel  = makeLabel("",   size: 15, bold: true)
-        descLabel   = makeLabel("",   size: 13, color: .secondaryLabelColor)
-        descLabel.maximumNumberOfLines = 4
+        // Header labels
+        stepLabel  = makeLabel("",  size: 11, color: .secondaryLabelColor)
+        iconLabel  = makeLabel("",  size: 28)
+        titleLabel = makeLabel("",  size: 15, bold: true)
+        descLabel  = makeLabel("",  size: 13, color: .secondaryLabelColor)
+        descLabel.maximumNumberOfLines = 3
         descLabel.lineBreakMode        = .byWordWrapping
 
-        statusDot   = makeLabel("○",  size: 13)
-        statusText  = makeLabel("",   size: 13, color: .secondaryLabelColor)
+        // Instructions box — tinted background for visual hierarchy
+        instructionsBox = NSView()
+        instructionsBox.wantsLayer                    = true
+        instructionsBox.layer?.backgroundColor        = NSColor.controlBackgroundColor.cgColor
+        instructionsBox.layer?.cornerRadius           = 8
 
-        // Buttons
-        grantButton    = makeButton("Grant Access",        action: #selector(grantAccess))
-        settingsButton = makeButton("Open System Settings", action: #selector(openSettings))
-        checkButton    = makeButton("Check Again",          action: #selector(checkAgain))
-        continueButton = makeButton("Continue →",           action: #selector(continueTapped))
+        instructionsLabel = makeLabel("", size: 12, color: .secondaryLabelColor)
+        instructionsLabel.maximumNumberOfLines        = 6
+        instructionsLabel.lineBreakMode               = .byWordWrapping
+        instructionsLabel.translatesAutoresizingMaskIntoConstraints = false
+        instructionsBox.addSubview(instructionsLabel)
+        NSLayoutConstraint.activate([
+            instructionsLabel.topAnchor.constraint(equalTo: instructionsBox.topAnchor,      constant: 10),
+            instructionsLabel.leadingAnchor.constraint(equalTo: instructionsBox.leadingAnchor, constant: 12),
+            instructionsLabel.trailingAnchor.constraint(equalTo: instructionsBox.trailingAnchor, constant: -12),
+            instructionsLabel.bottomAnchor.constraint(equalTo: instructionsBox.bottomAnchor, constant: -10),
+        ])
+
+        // Status row
+        statusDot  = makeLabel("○", size: 13)
+        statusText = makeLabel("",  size: 13, color: .secondaryLabelColor)
+
+        // Action buttons
+        primaryButton  = makeButton("", action: #selector(primaryTapped))
+        relaunchButton = makeButton("Relaunch App", action: #selector(relaunchApp))
+        checkLink      = NSButton(title: "↺ Check Again", target: self, action: #selector(checkAgain))
+        checkLink.bezelStyle = .recessed
+        checkLink.isBordered = true
+
+        // Bottom row
+        skipButton     = makeButton("Skip for Now", action: #selector(skipTapped))
+        continueButton = makeButton("Continue →",   action: #selector(continueTapped))
         continueButton.keyEquivalent = "\r"
 
-        // Row stacks
-        let headerRow = hstack([iconLabel, titleLabel], spacing: 8)
-        let statusRow = hstack([statusDot, statusText], spacing: 6)
-        let actionRow = hstack([grantButton, settingsButton], spacing: 8)
+        // Layout groups
+        let headerRow  = hstack([iconLabel, titleLabel], spacing: 8)
+        let statusRow  = hstack([statusDot, statusText], spacing: 6)
+        let actionRow  = hstack([primaryButton, relaunchButton], spacing: 8)
 
         // Separator
         let sep = NSBox(); sep.boxType = .separator
 
-        // Continue right-aligned inside a container view
+        // Bottom bar: skip left, continue right
+        let skipContainer = NSView()
+        skipButton.translatesAutoresizingMaskIntoConstraints = false
+        skipContainer.addSubview(skipButton)
+        NSLayoutConstraint.activate([
+            skipButton.leadingAnchor.constraint(equalTo: skipContainer.leadingAnchor),
+            skipButton.topAnchor.constraint(equalTo: skipContainer.topAnchor),
+            skipButton.bottomAnchor.constraint(equalTo: skipContainer.bottomAnchor),
+        ])
+
         let continueContainer = NSView()
         continueButton.translatesAutoresizingMaskIntoConstraints = false
         continueContainer.addSubview(continueButton)
@@ -135,29 +204,33 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             continueButton.bottomAnchor.constraint(equalTo: continueContainer.bottomAnchor),
         ])
 
+        let bottomRow = hstack([skipContainer, continueContainer], spacing: 0)
+        bottomRow.distribution = .fillEqually
+
         // Main vertical stack
         let mainStack = vstack([
             stepLabel,
             headerRow,
             descLabel,
+            instructionsBox,
             statusRow,
             actionRow,
-            checkButton,
+            checkLink,
             sep,
-            continueContainer,
+            bottomRow,
         ], spacing: 12)
         mainStack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(mainStack)
 
         NSLayoutConstraint.activate([
-            mainStack.topAnchor.constraint(equalTo: content.topAnchor,       constant:  pad),
-            mainStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant:  pad),
+            mainStack.topAnchor.constraint(equalTo: content.topAnchor,         constant:  pad),
+            mainStack.leadingAnchor.constraint(equalTo: content.leadingAnchor,  constant:  pad),
             mainStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -pad),
-            mainStack.bottomAnchor.constraint(equalTo: content.bottomAnchor,  constant: -pad),
+            mainStack.bottomAnchor.constraint(equalTo: content.bottomAnchor,   constant: -pad),
         ])
 
-        // Stretch full-width views to fill the stack (leading-aligned by default)
-        for v in [descLabel, sep, continueContainer] as [NSView] {
+        // Stretch full-width views
+        for v in [descLabel, instructionsBox, sep, bottomRow] as [NSView] {
             v.trailingAnchor.constraint(equalTo: mainStack.trailingAnchor).isActive = true
         }
     }
@@ -168,19 +241,24 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         let info   = steps[currentStep]
         let isLast = currentStep == steps.count - 1
 
-        stepLabel.stringValue  = "Step \(currentStep + 1) of \(steps.count)"
-        iconLabel.stringValue  = info.icon
-        titleLabel.stringValue = info.title
-        descLabel.stringValue  = info.desc
-        continueButton.title   = isLast ? "Finish" : "Continue →"
+        stepLabel.stringValue         = "Step \(currentStep + 1) of \(steps.count)"
+        iconLabel.stringValue         = info.icon
+        titleLabel.stringValue        = info.title
+        descLabel.stringValue         = info.desc
+        instructionsLabel.stringValue = info.instructions
+        continueButton.title          = isLast ? "Finish" : "Continue →"
+
+        // relaunchButton — step 0 only
+        relaunchButton.isHidden = (currentStep != 0)
 
         refreshStatus()
     }
 
     private func refreshStatus() {
+        let info   = steps[currentStep]
         let status = currentPermissionStatus()
 
-        // Status indicator
+        // Status dot
         switch status {
         case .granted:
             statusDot.textColor    = .systemGreen
@@ -196,18 +274,24 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             statusText.stringValue = "Not yet requested"
         }
 
-        // Screen Recording step: "Request Access" triggers the CGRequest dialog
-        // Other steps: "Grant Access" only while undetermined; hide once determined
-        if currentStep == 0 {
-            grantButton.title    = "Request Access"
-            grantButton.isHidden = (status == .granted)
+        // primaryButton — single action, title/target changes by step+state
+        if status == .granted {
+            primaryButton.isHidden = true
         } else {
-            grantButton.title    = "Grant Access"
-            grantButton.isHidden = (status != .undetermined)
+            primaryButton.isHidden = false
+            if info.grantsInApp && status == .undetermined {
+                // Mic/Calendar undetermined: show in-app dialog
+                primaryButton.title = "Grant Access"
+            } else {
+                // Screen Recording (all states), or Mic/Calendar denied
+                primaryButton.title = "Open System Settings"
+            }
         }
 
-        // "Open System Settings" — hide only when already granted
-        settingsButton.isHidden = (status == .granted)
+        // relaunchButton — step 0 only, hidden once granted
+        if currentStep == 0 {
+            relaunchButton.isHidden = (status == .granted)
+        }
     }
 
     private func currentPermissionStatus() -> PermissionStatus {
@@ -220,15 +304,19 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: — Actions
 
-    @objc private func grantAccess() {
+    @objc private func primaryTapped() {
+        let info   = steps[currentStep]
+        let status = currentPermissionStatus()
+
+        if info.grantsInApp && status == .undetermined {
+            grantAccess()
+        } else {
+            openSettings()
+        }
+    }
+
+    private func grantAccess() {
         switch currentStep {
-        case 0:
-            // CGRequestScreenCaptureAccess is async — re-check after settle time
-            // ถ้า macOS แสดง dialog ให้ผู้ใช้อนุญาต ต้องรอสักครู่ก่อน check ผล
-            CGRequestScreenCaptureAccess()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                self?.refreshStatus()
-            }
         case 1:
             PermissionChecker.requestMicrophone { [weak self] _ in
                 self?.refreshStatus()
@@ -240,14 +328,41 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc private func openSettings() {
+    private func openSettings() {
         let pane = steps[currentStep].pane
         let url  = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
         NSWorkspace.shared.open(url)
     }
 
+    @objc private func relaunchApp() {
+        // เปิด instance ใหม่หลังจากอันนี้ terminate แล้ว — ส่ง path เป็น env var แยก
+        // ไม่ใช้ string interpolation โดยตรงใน shell command เพื่อ handle paths ที่มีช่องว่าง
+        let path = Bundle.main.bundlePath
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // sleep ก่อนแล้วค่อย open — ให้ process นี้ terminate เสร็จก่อน
+        task.arguments = ["-c", "sleep 0.5; /usr/bin/open \"$APP_PATH\""]
+        task.environment = ProcessInfo.processInfo.environment.merging(["APP_PATH": path]) { $1 }
+        do {
+            try task.run()
+            NSApp.terminate(nil)
+        } catch {
+            // ถ้า spawn ล้มเหลว — แจ้ง user แทนการ terminate โดยเงียบ
+            let alert = NSAlert()
+            alert.messageText     = "Could not relaunch automatically"
+            alert.informativeText = "Please quit Team Recorder and reopen it manually.\n\n(\(error.localizedDescription))"
+            alert.alertStyle      = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
     @objc private func checkAgain() {
         refreshStatus()
+    }
+
+    @objc private func skipTapped() {
+        completeSetupAndStartWatcher(closeWindow: true)
     }
 
     @objc private func continueTapped() {
@@ -255,10 +370,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             currentStep += 1
             refreshStep()
         } else {
-            // ปิดหน้าต่าง Setup แล้วบันทึกว่าทำเสร็จแล้ว จากนั้นเริ่ม watcher
-            UserDefaults.standard.set(true, forKey: "setupCompleted")
-            window?.close()
-            WatcherManager.shared.autoStartIfNeeded()
+            // กด Finish — ออกจาก setup, เริ่ม watcher
+            completeSetupAndStartWatcher(closeWindow: true)
         }
     }
 

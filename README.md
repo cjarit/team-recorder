@@ -12,40 +12,30 @@
 - macOS 13 (Ventura) ขึ้นไป
 - Python 3.11+
 - [icalBuddy](https://hasseg.org/icalBuddy/) (`brew install ical-buddy`)
-- สิทธิ์ **Screen Recording** ให้ Terminal (ตั้งครั้งเดียว)
+- สิทธิ์ **Screen Recording / Microphone / Calendar** ให้ `TeamRecorderBar.app` (Setup Guide จะแนะนำทีละขั้นตอน)
 
 ---
 
-## Quick Start
+## Installation
+
+> **ยังไม่มี installer พร้อมแชร์ให้ทีม** — ปัจจุบันติดตั้งได้โดย clone repo เท่านั้น
+> ดู [packaging/README.md](packaging/README.md) สำหรับ roadmap และเหตุผล
 
 ```bash
-# 1. ติดตั้ง dependencies
-make setup
-
-# 2. Build และติดตั้ง menu bar app ไปที่ /Applications/ (แนะนำ)
-make menu-bar-install
-# แอปจะเปิดขึ้นอัตโนมัติ และแสดง Setup Guide ครั้งแรก
-# → ทำตามขั้นตอน: Screen Recording → Microphone → Calendar → Finish
+git clone <repo-url>
+cd "Team Recorder"
+make setup              # ติดตั้ง dependencies (ครั้งแรก)
+make menu-bar-install   # build + copy ไปที่ /Applications/ + เปิดแอป
 ```
-
-**หรือ** build แบบ local (ไม่ copy ไป /Applications/):
-```bash
-make menu-bar
-# จากนั้นดับเบิลคลิก Start Recorder.command
-```
-
-> **หมายเหตุ:** ถ้าย้ายโฟลเดอร์โปรเจกต์ ให้รัน `make menu-bar` หรือ `make menu-bar-install` อีกครั้งเพื่ออัปเดต path
+แอปอยู่ที่: `/Applications/TeamRecorderBar.app`
 
 ---
 
-### วิธีใช้ Terminal (ไม่ผ่าน menu bar)
+## การใช้งานประจำวัน
 
-```bash
-# เปิดสิทธิ์ Screen Recording ให้ Terminal ก่อน (ทำครั้งเดียว)
-# System Settings → Privacy & Security → Screen Recording → Terminal ✓
-
-make run
-```
+1. เปิด **TeamRecorderBar** จาก `/Applications/` (หรือเปิดอัตโนมัติถ้าเปิด Launch at Login)
+2. เข้า Teams meeting — การบันทึกเริ่มอัตโนมัติ
+3. ออกจาก meeting — ไฟล์จะถูกตั้งชื่อตาม calendar event และบันทึกที่ `~/Documents/Teams Recording/`
 
 ---
 
@@ -132,9 +122,22 @@ recorder/recorder --list-devices
 | `make build-recorder` | rebuild Swift binary (ต้องมี Xcode CLT) |
 | `make menu-bar` | build menu bar app → `menu-bar/.build/TeamRecorderBar.app` (ครั้งแรก หรือย้าย repo) |
 | `make menu-bar-install` | build + copy ไปที่ `/Applications/TeamRecorderBar.app` |
+| `make dist` | สร้าง `dist/TeamRecorder.zip` — สำหรับเครื่อง developer เท่านั้น (ดู [packaging/README.md](packaging/README.md)) |
 
 **Log & status:** บันทึก log รายวันที่ `~/Library/Logs/Team Recorder/` และเขียน
 สถานะปัจจุบัน (`status.json`) ที่ `~/Library/Application Support/Team Recorder/`
+
+### วิธีใช้ Terminal (ไม่ผ่าน menu bar)
+
+```bash
+# วิธีนี้ใช้ Terminal โดยตรง — ต้องให้สิทธิ์ Screen Recording แก่ Terminal
+# (ถ้าใช้ TeamRecorderBar.app ไม่ต้องทำขั้นตอนนี้)
+# System Settings → Privacy & Security → Screen Recording → Terminal ✓
+
+make run
+```
+
+> **หมายเหตุ:** ถ้าย้ายโฟลเดอร์โปรเจกต์ ให้รัน `make menu-bar` หรือ `make menu-bar-install` อีกครั้งเพื่ออัปเดต path
 
 ---
 
@@ -176,6 +179,6 @@ UDP drops → รอ 8s ยืนยัน (ป้องกัน false stop)
 | ปัญหา | วิธีแก้ |
 |-------|---------|
 | ไม่เริ่มอัด | ตรวจสอบ Screen Recording permission ใน System Settings |
-| ชื่อไฟล์เป็น "Teams Meeting" | Terminal ยังไม่ได้รับสิทธิ์ Calendar → System Settings → Privacy & Security → Calendars |
+| ชื่อไฟล์เป็น "Teams Meeting" | TeamRecorderBar ยังไม่ได้รับสิทธิ์ Calendar → System Settings → Privacy & Security → Calendars → **Full Access** |
 | `recorder binary เป็น arch ผิด` | รัน `make build-recorder` แล้ว commit `recorder/recorder` |
 | เสียงไม่มี mic | ตรวจสอบ `AUDIO_INPUT_DEVICE_UID` ใน `.env` หรือลองใช้ default |
