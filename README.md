@@ -12,7 +12,7 @@
 - macOS 13 (Ventura) ขึ้นไป
 - Python 3.11+
 - [icalBuddy](https://hasseg.org/icalBuddy/) (`brew install ical-buddy`)
-- สิทธิ์ **Screen Recording / Microphone / Calendar** ให้ `TeamRecorderBar.app` (Setup Guide จะแนะนำทีละขั้นตอน)
+- สิทธิ์ **Screen Recording / Microphone / Calendar** ให้ **Team Recorder** (Setup Guide จะแนะนำทีละขั้นตอน)
 
 ---
 
@@ -37,7 +37,7 @@ make menu-bar-install   # build + copy ไปที่ /Applications/ + เป�
 
 ## การใช้งานประจำวัน
 
-1. เปิด **TeamRecorderBar** จาก `/Applications/` (หรือเปิดอัตโนมัติถ้าเปิด Launch at Login)
+1. เปิด **Team Recorder** จาก `/Applications/` (หรือเปิดอัตโนมัติถ้าเปิด Launch at Login)
 2. เข้า Teams meeting — การบันทึกเริ่มอัตโนมัติ
 3. ออกจาก meeting — ไฟล์จะถูกตั้งชื่อตาม calendar event และบันทึกที่ `~/Documents/Teams Recording/`
 
@@ -45,7 +45,7 @@ make menu-bar-install   # build + copy ไปที่ /Applications/ + เป�
 
 ## Menu Bar App
 
-เมื่อ TeamRecorderBar.app เปิดอยู่ จะเห็น icon ที่ menu bar ด้านขวาบน:
+เมื่อ **Team Recorder** เปิดอยู่ จะเห็น icon ที่ menu bar ด้านขวาบน:
 
 | Icon | ความหมาย |
 |------|-----------|
@@ -135,7 +135,7 @@ recorder/recorder --list-devices
 
 ```bash
 # วิธีนี้ใช้ Terminal โดยตรง — ต้องให้สิทธิ์ Screen Recording แก่ Terminal
-# (ถ้าใช้ TeamRecorderBar.app ไม่ต้องทำขั้นตอนนี้)
+# (ถ้าใช้ Team Recorder ไม่ต้องทำขั้นตอนนี้)
 # System Settings → Privacy & Security → Screen Recording → Terminal ✓
 
 make run
@@ -182,7 +182,10 @@ UDP drops → รอ 8s ยืนยัน (ป้องกัน false stop)
 
 | ปัญหา | วิธีแก้ |
 |-------|---------|
-| ไม่เริ่มอัด | ตรวจสอบ Screen Recording permission ใน System Settings |
-| ชื่อไฟล์เป็น "Teams Meeting" | TeamRecorderBar ยังไม่ได้รับสิทธิ์ Calendar → System Settings → Privacy & Security → Calendars → **Full Access** |
+| ไม่เริ่มอัด | เปิด Setup Guide… → Step 1 Screen Recording → ให้สิทธิ์แล้ว Relaunch App |
+| Setup Guide ไม่ขึ้น | คลิก menu bar icon → Setup Guide… หรือรัน `make reset-setup` แล้วเปิดแอปใหม่ |
+| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder ยังไม่ได้รับสิทธิ์ Calendar → System Settings → Privacy & Security → Calendars → **Full Access** |
 | `recorder binary เป็น arch ผิด` | รัน `make build-recorder` แล้ว commit `recorder/recorder` |
 | เสียงไม่มี mic | ตรวจสอบ `AUDIO_INPUT_DEVICE_UID` ใน `.env` หรือลองใช้ default |
+
+ดูรายละเอียดเพิ่มเติม: [docs/user/troubleshooting.md](docs/user/troubleshooting.md)

@@ -198,11 +198,11 @@ fi
 # ─── 6/6  Screen Recording permission ────────────────────────
 step "6/6  Screen Recording permission"
 
-# หมายเหตุ: ถ้าใช้ TeamRecorderBar.app — ข้ามขั้นตอนนี้ได้เลย
+# หมายเหตุ: ถ้าใช้แอป Team Recorder — ข้ามขั้นตอนนี้ได้เลย
 # แอปจะขอสิทธิ์เองผ่าน Setup Guide โดยอัตโนมัติ
 #
 # ขั้นตอนนี้จำเป็นเฉพาะถ้าจะรันผ่าน Terminal ด้วย make run
-warn "ถ้าใช้ TeamRecorderBar.app ข้ามได้ — Setup Guide จะขอสิทธิ์ให้เอง"
+warn "ถ้าใช้แอป Team Recorder ข้ามได้ — Setup Guide จะขอสิทธิ์ให้เอง"
 echo "  ถ้าจะใช้ make run (Terminal): ให้สิทธิ์ Screen Recording แก่ Terminal ก่อน"
 echo "  System Settings → Privacy & Security → Screen Recording → Terminal ✓"
 echo "  ถ้าเพิ่งเปิดสิทธิ์ ให้ปิด/เปิด Terminal ใหม่ก่อนรัน make run"
