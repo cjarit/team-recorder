@@ -15,7 +15,7 @@
 |---------|-----|
 | Setup Guide doesn't open | Click menu bar icon → Setup Guide… |
 | "Launch at Login" does nothing | App must be in `/Applications/` — run `make menu-bar-install`, then re-toggle |
-| App not in Login Items after enabling | Check System Settings → General → Login Items — TeamRecorderBar should appear |
+| App not in Login Items after enabling | Check System Settings → General → Login Items — Team Recorder should appear |
 | "Relaunch App" shows an error alert | Quit manually from the menu bar, then reopen `/Applications/TeamRecorderBar.app` |
 | Grey waveform but no recording | Run `make doctor` in the project folder — shows permission/disk/binary status |
 | Setup Guide appeared on an update/reinstall | Expected — clear saved state with `make reset-setup`, then reopen the app |
@@ -34,6 +34,6 @@
 
 | Permission | How to revoke |
 |------------|---------------|
-| Screen Recording | System Settings → Privacy & Security → Screen Recording → TeamRecorderBar → click **−** |
-| Microphone | System Settings → Privacy & Security → Microphone → TeamRecorderBar → toggle off |
-| Calendar | System Settings → Privacy & Security → Calendars → TeamRecorderBar → **None** |
+| Screen Recording | System Settings → Privacy & Security → Screen Recording → Team Recorder → click **−** |
+| Microphone | System Settings → Privacy & Security → Microphone → Team Recorder → toggle off |
+| Calendar | System Settings → Privacy & Security → Calendars → Team Recorder → **None** |

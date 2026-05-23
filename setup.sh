@@ -1,6 +1,6 @@
 #!/bin/bash
-# setup-v2.sh — Teams Recorder v2 built-in recorder setup
-# รัน: bash v2/setup-v2.sh  หรือ  make setup-v2
+# setup.sh — Team Recorder setup
+# รัน: bash setup.sh  หรือ  make setup
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ ENV_FILE="$SCRIPT_DIR/.env"
 
 echo ""
 echo -e "${BOLD}=================================================${NC}"
-echo -e "${BOLD}  Teams Recorder v2 — Setup${NC}"
+echo -e "${BOLD}  Team Recorder — Setup${NC}"
 echo -e "${BOLD}=================================================${NC}"
 echo ""
 
@@ -46,7 +46,15 @@ ok "macOS $MACOS_VER"
 # ─── 2/6  Homebrew ────────────────────────────────────────────
 step "2/6  ตรวจสอบ Homebrew"
 if ! command -v brew &>/dev/null; then
-  fail "Homebrew ยังไม่ได้ติดตั้ง — ติดตั้งก่อนด้วย https://brew.sh แล้วรัน setup-v2 อีกครั้ง"
+  fail "Homebrew ยังไม่ได้ติดตั้ง"
+  echo ""
+  echo "  ติดตั้ง Homebrew ด้วยคำสั่งนี้:"
+  echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+  echo ""
+  echo "  บน Apple Silicon ให้รันบรรทัดนี้เพิ่มหลังติดตั้ง:"
+  echo '  eval "$(/opt/homebrew/bin/brew shellenv)"'
+  echo ""
+  echo "  ดูรายละเอียดเพิ่มเติม: docs/user/setup.md → Prerequisites"
   exit 1
 fi
 if [[ -f /opt/homebrew/bin/brew ]]; then
@@ -105,8 +113,8 @@ if [[ "$NEED_BUILD" -eq 1 ]]; then
   ok "recorder rebuilt"
 fi
 
-# ─── 5/6  v2/.env ─────────────────────────────────────────────
-step "5/6  ตั้งค่า v2/.env"
+# ─── 5/6  .env ────────────────────────────────────────────────
+step "5/6  ตั้งค่า .env"
 
 # Helper: write a key=value into ENV_FILE (replaces existing line)
 set_env_key() {
@@ -122,11 +130,11 @@ PYEOF
 }
 
 if [[ -f "$ENV_FILE" ]]; then
-  warn "v2/.env มีอยู่แล้ว — เข้าสู่โหมดแก้ไข"
+  warn ".env มีอยู่แล้ว — เข้าสู่โหมดแก้ไข"
 else
   cp "$SCRIPT_DIR/.env.example" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
-  ok "สร้าง v2/.env แล้ว"
+  ok "สร้าง .env แล้ว"
 fi
 
 # ── โฟลเดอร์บันทึก ──────────────────────────────────────────
@@ -202,10 +210,14 @@ echo "  ถ้าเพิ่งเปิดสิทธิ์ ให้ปิ�
 # ─── Summary ──────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}  ══════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  Setup v2 เสร็จแล้ว ✓${NC}"
+echo -e "${GREEN}${BOLD}  Setup เสร็จแล้ว ✓${NC}"
 echo -e "${GREEN}${BOLD}  ══════════════════════════════════════${NC}"
 echo ""
-echo "  รัน v2:    make run"
+echo "  เปิดแอป:   make menu-bar-install"
+echo "             มองหา icon ที่ menu bar มุมขวาบนของจอ"
+echo ""
 echo "  ทดสอบ:    make test"
 echo "  แก้ config: $ENV_FILE"
+echo ""
+echo "  (ถ้าต้องการใช้ Terminal โดยตรง: make run)"
 echo ""

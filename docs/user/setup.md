@@ -35,8 +35,6 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 
 ## Installation
 
-### Installation
-
 ```bash
 git clone https://github.com/cjarit/team-recorder
 cd team-recorder
@@ -47,11 +45,16 @@ make menu-bar-install   # build + copy to /Applications/ + launch
 > **หมายเหตุ:** ยังไม่มี installer สำเร็จรูป — ปัจจุบันต้อง clone repo และ build เอง
 > ดู [packaging/README.md](../../packaging/README.md) สำหรับ roadmap
 
+> **QA / reinstall:** ถ้า Setup Guide ไม่ขึ้นหลัง reinstall ให้รัน:
+> ```bash
+> make reset-setup && make menu-bar-install
+> ```
+
 ## First-Run Setup
 
 The app shows a Setup Guide on first launch:
 
-1. **Screen Recording** — click "Open System Settings", enable the toggle, then click "Relaunch App"
+1. **Screen Recording** — click "Add Team Recorder to Screen Recording", enable the toggle in System Settings, then click "Relaunch App"
 2. **Microphone** — click "Grant Access" and allow in the popup
 3. **Calendar Access** — click "Grant Access" and choose **Full Access** (not Write Only)
 4. Click **Finish** — the recorder starts automatically
