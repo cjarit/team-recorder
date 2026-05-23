@@ -43,9 +43,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             title: "Screen Recording",
             desc: "Required to capture system audio from Microsoft Teams.",
             pane: "Privacy_ScreenCapture",
-            instructions: "1. Click \"Open System Settings\" below\n"
-                        + "2. Find Team Recorder — enable the toggle\n"
-                        + "3. Click \"Relaunch App\" to apply\n"
+            instructions: "1. Click \"Add Team Recorder to Screen Recording\" below\n"
+                        + "2. macOS will open System Settings — turn on the toggle\n"
+                        + "3. Come back here and click \"Relaunch App\"\n"
                         + "   (macOS requires a relaunch after enabling this permission)",
             grantsInApp: false
         ),
@@ -93,6 +93,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     /// Fallback for the red-close-button path — starts watcher so the app isn't stuck idle.
     /// `completingSetup` guard prevents re-entry when we call close() ourselves.
     func windowWillClose(_ notification: Notification) {
+        // คืน activation policy กลับเป็น .accessory (ซ่อนจาก Dock) ก่อนเสมอ
+        NSApp.setActivationPolicy(.accessory)
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
             completeSetupAndStartWatcher(closeWindow: false)   // already closing
         }
@@ -111,6 +113,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         currentStep = 0
         win.center()
         refreshStep()
+        // ชั่วคราว switch เป็น .regular เพื่อให้ window ขึ้น front ได้
+        // (.accessory ไม่สามารถ steal focus จาก app อื่นได้)
+        NSApp.setActivationPolicy(.regular)
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -279,11 +284,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             primaryButton.isHidden = true
         } else {
             primaryButton.isHidden = false
-            if info.grantsInApp && status == .undetermined {
+            if currentStep == 0 {
+                // Step 0: CTA that explains what happens — requestScreenRecording() + open Settings
+                primaryButton.title = "Add Team Recorder to Screen Recording"
+            } else if info.grantsInApp && status == .undetermined {
                 // Mic/Calendar undetermined: show in-app dialog
                 primaryButton.title = "Grant Access"
             } else {
-                // Screen Recording (all states), or Mic/Calendar denied
+                // Mic/Calendar denied
                 primaryButton.title = "Open System Settings"
             }
         }
@@ -308,7 +316,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         let info   = steps[currentStep]
         let status = currentPermissionStatus()
 
-        if info.grantsInApp && status == .undetermined {
+        if currentStep == 0 {
+            // ต้อง call requestScreenRecording() ก่อน open Settings —
+            // ถ้าไม่ call macOS จะไม่เพิ่ม app เข้า Screen Recording list เลย
+            PermissionChecker.requestScreenRecording()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.openSettings()
+            }
+        } else if info.grantsInApp && status == .undetermined {
             grantAccess()
         } else {
             openSettings()

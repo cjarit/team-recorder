@@ -50,6 +50,16 @@ struct PermissionChecker {
         }
     }
 
+    // MARK: — Permission requests
+
+    /// Trigger the Screen Recording permission dialog.
+    /// macOS will NOT add the app to the System Settings Screen Recording list
+    /// until this is called at least once — the toggle is invisible without it.
+    /// Fire-and-forget (synchronous call, result observed via screenRecording()).
+    static func requestScreenRecording() {
+        CGRequestScreenCaptureAccess()
+    }
+
     // MARK: — Async requests (completion always called on main thread)
 
     /// Trigger the system microphone permission dialog.

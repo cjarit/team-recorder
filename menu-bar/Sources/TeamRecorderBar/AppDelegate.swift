@@ -39,10 +39,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             SetupWindowController.shared.show()
         } else {
             WatcherManager.shared.autoStartIfNeeded()
-            // Brief icon flash confirms to the user that the app is already running
-            statusBarController?.flashIcon()
+            // Show alert instead of flashIcon() — ผู้ใช้ใหม่มักไม่รู้ว่าแอปอยู่ที่ menu bar
+            showAlreadyRunningAlert()
         }
         statusBarController?.refresh()
         return true
+    }
+
+    private func showAlreadyRunningAlert() {
+        let alert = NSAlert()
+        alert.messageText     = "Team Recorder กำลังทำงานอยู่"
+        alert.informativeText = "มองหา icon ที่ menu bar มุมขวาบนของจอ (○ waveform)"
+        alert.alertStyle      = .informational
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Open Setup Guide")
+        // ชั่วคราว switch เป็น .regular เพื่อให้ alert ขึ้น front ได้
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        NSApp.setActivationPolicy(.accessory)
+        if response == .alertSecondButtonReturn {
+            SetupWindowController.shared.show()
+        }
     }
 }

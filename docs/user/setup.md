@@ -2,6 +2,32 @@
 
 > For non-developers. Step-by-step installation and first-run setup.
 
+## Prerequisites (ทำครั้งเดียว สำหรับเครื่องใหม่)
+
+### 1. Xcode Command Line Tools
+
+```bash
+xcode-select --install
+```
+
+กด **Install** ในหน้าต่างที่ขึ้นมา รอจนเสร็จ (~5–10 นาที)
+
+### 2. Homebrew
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+ทำตามคำแนะนำที่แสดง — บน Apple Silicon อาจต้องรันบรรทัดนี้เพิ่มหลังติดตั้ง:
+
+```bash
+eval "$(/opt/homebrew/bin/brew shellenv)"
+```
+
+> `make setup` จะติดตั้ง Python และ icalBuddy ผ่าน Homebrew ให้อัตโนมัติ
+
+---
+
 ## Requirements
 
 - macOS 13 (Ventura) or later

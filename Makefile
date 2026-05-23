@@ -2,7 +2,7 @@ PYTHON      := python3
 MENU_BAR_APP = menu-bar/.build/TeamRecorderBar.app
 DIST_DIR     = dist
 
-.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install dist
+.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install dist icon reset-setup
 
 run:
 	$(PYTHON) teams_recorder_v2.py
@@ -34,6 +34,7 @@ build-recorder:
 	@echo "  ✓  recorder ($$(uname -m)) — done"
 
 menu-bar:
+	@echo "  ⏳  Building TeamRecorderBar... (ครั้งแรกอาจใช้เวลา ~1 นาที)"
 	cd menu-bar && swift build -c release
 	@rm -rf "$(MENU_BAR_APP)"
 	@mkdir -p "$(MENU_BAR_APP)/Contents/MacOS" \
@@ -42,6 +43,8 @@ menu-bar:
 	       "$(MENU_BAR_APP)/Contents/MacOS/"
 	@cp menu-bar/Resources/Info.plist \
 	       "$(MENU_BAR_APP)/Contents/"
+	@cp menu-bar/Resources/AppIcon.icns \
+	       "$(MENU_BAR_APP)/Contents/Resources/"
 	@# Embed absolute watcher path so the app can find it after `make menu-bar-install`
 	@echo "$$(pwd)/teams_recorder_v2.py" \
 	       > "$(MENU_BAR_APP)/Contents/Resources/watcher_path.txt"
@@ -51,8 +54,19 @@ menu-bar:
 menu-bar-install: menu-bar
 	@rm -rf /Applications/TeamRecorderBar.app
 	@cp -r "$(MENU_BAR_APP)" /Applications/
-	@echo "  ✓  Installed to /Applications/TeamRecorderBar.app"
+	@echo "  ✓  Installed → /Applications/TeamRecorderBar.app"
 	@open /Applications/TeamRecorderBar.app
+	@echo ""
+	@echo "  ▶  แอปเปิดแล้ว — มองหา icon ที่ menu bar มุมขวาบนของจอ"
+	@echo "  ▶  Setup Guide จะขึ้นอัตโนมัติถ้ายังไม่เคยติดตั้ง"
+	@echo "     (ถ้าไม่ขึ้น รัน: make reset-setup แล้วเปิดแอปใหม่)"
+
+icon:
+	@python3 scripts/make_icon.py
+
+reset-setup:
+	@defaults delete com.team-recorder.menu-bar setupCompleted 2>/dev/null || true
+	@echo "  ✓  Setup state reset — เปิดแอปใหม่เพื่อรัน Setup Guide"
 
 dist: menu-bar
 	@mkdir -p "$(DIST_DIR)"

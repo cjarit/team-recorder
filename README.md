@@ -27,6 +27,10 @@ cd team-recorder
 make setup              # ติดตั้ง dependencies (ครั้งแรก)
 make menu-bar-install   # build + copy ไปที่ /Applications/ + เปิดแอป
 ```
+
+> แอปจะเปิดอัตโนมัติ — มองหา icon ที่ **menu bar มุมขวาบนของจอ** (ไม่มี Dock icon)
+> ถ้า Setup Guide ไม่ขึ้น ให้รัน `make reset-setup` แล้วเปิดแอปใหม่
+
 แอปอยู่ที่: `/Applications/TeamRecorderBar.app`
 
 ---
