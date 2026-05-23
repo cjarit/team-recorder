@@ -73,19 +73,26 @@ struct PermissionChecker {
         }
     }
 
+    /// Retained across the async callback — a local EKEventStore is released before the callback
+    /// fires, causing the completion to never be called.
+    private static var calendarStore: EKEventStore?
+
     /// Trigger the system calendar permission dialog.
     /// Uses requestFullAccessToEvents on macOS 14+; requestAccess(to:) on macOS 13.
     static func requestCalendar(completion: @escaping (PermissionStatus) -> Void) {
         let store = EKEventStore()
+        calendarStore = store   // retain until callback fires
         if #available(macOS 14.0, *) {
             store.requestFullAccessToEvents { granted, _ in
                 DispatchQueue.main.async {
+                    Self.calendarStore = nil
                     completion(granted ? .granted : .denied)
                 }
             }
         } else {
             store.requestAccess(to: .event) { granted, _ in
                 DispatchQueue.main.async {
+                    Self.calendarStore = nil
                     completion(granted ? .granted : .denied)
                 }
             }

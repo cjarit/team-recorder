@@ -89,13 +89,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let path = response.notification.request.content.userInfo["filePath"] as? String {
-            let url = URL(fileURLWithPath: path)
-            if FileManager.default.fileExists(atPath: path) {
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } else {
-                NSWorkspace.shared.open(url.deletingLastPathComponent())
-            }
+        let path = response.notification.request.content.userInfo["filePath"] as? String ?? ""
+        if !path.isEmpty, FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        } else {
+            // File missing or path unknown — open the recordings folder
+            NSWorkspace.shared.open(WatcherManager.shared.recordingDirectory())
         }
         completionHandler()
     }

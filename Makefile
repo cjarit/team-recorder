@@ -33,7 +33,7 @@ build-recorder:
 	    recorder/recorder
 	@echo "  ✓  recorder ($$(uname -m)) — done"
 
-menu-bar:
+menu-bar: icon
 	@echo "  ⏳  Building TeamRecorderBar... (ครั้งแรกอาจใช้เวลา ~1 นาที)"
 	@echo "     กำลัง compile Swift app..."
 	@cd menu-bar && swift build -c release
@@ -56,6 +56,8 @@ menu-bar-install: menu-bar
 	@echo "  ⏳  Installing TeamRecorderBar.app..."
 	@rm -rf /Applications/TeamRecorderBar.app
 	@cp -r "$(MENU_BAR_APP)" /Applications/
+	@/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+	    -f /Applications/TeamRecorderBar.app 2>/dev/null || true
 	@echo "  ✓  Installed → /Applications/TeamRecorderBar.app"
 	@echo "  ⏳  Opening Team Recorder..."
 	@open /Applications/TeamRecorderBar.app

@@ -53,8 +53,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             desc: "Required to capture system audio from Microsoft Teams.",
             pane: "Privacy_ScreenCapture",
             instructions: "1. Click \"Add Team Recorder to Screen Recording\" below\n"
-                        + "2. macOS will open System Settings — turn on the toggle\n"
-                        + "3. Come back here and click \"Relaunch App\"\n"
+                        + "2. macOS opens System Settings — find Team Recorder in the list\n"
+                        + "   If it's not there: click the + button and select TeamRecorderBar.app\n"
+                        + "3. Turn on the toggle next to Team Recorder\n"
+                        + "4. Come back here and click \"Relaunch App\"\n"
                         + "   (macOS requires a relaunch after enabling this permission)",
             grantsInApp: false
         ),

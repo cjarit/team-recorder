@@ -1271,7 +1271,8 @@ def main():
     session              = None
     end_pending_at       = 0.0   # เวลาที่ detect meeting จบครั้งแรก (สำหรับ grace period)
     recording_started_by = None  # None | "auto" | "manual"
-    suppress_auto_start  = False # True ขณะ Teams UDP ยังสูงหลัง manual stop
+    suppress_auto_start    = False # True ขณะ Teams UDP ยังสูงหลัง manual stop
+    suppress_auto_start_at = 0.0  # timestamp when suppressed — for 30s expiry
     crash_restart_count  = 0     # รีเซ็ตหลัง meeting จบปกติ — ป้องกัน crash loop
 
     # ─── TTY setup — define restore_tty BEFORE signal handlers ──
@@ -1339,8 +1340,12 @@ def main():
             active = is_teams_in_meeting()
 
             # Reset suppress เมื่อ Teams ไม่ได้ active — พร้อม auto-start รอบถัดไป
+            # Also expire after 30s so leave+rejoin within the poll window still auto-starts
             if not active and not in_meeting:
                 suppress_auto_start = False
+            elif suppress_auto_start and (time.time() - suppress_auto_start_at) > 30:
+                suppress_auto_start = False
+                log("[INFO] suppress_auto_start expired — พร้อม auto-start อีกครั้ง")
 
             if active and not in_meeting and not suppress_auto_start:
                 # Meeting เพิ่งเริ่ม (auto-detect)
@@ -1419,7 +1424,8 @@ def main():
                     elif _STOP:
                         suppress = _do_manual_stop(proc, session, active)
                         if session is not None:  # helper only stops when session exists
-                            suppress_auto_start  = suppress
+                            suppress_auto_start    = suppress
+                            suppress_auto_start_at = time.time() if suppress else 0.0
                             in_meeting           = False
                             recording_started_by = None
                             end_pending_at       = 0.0
@@ -1445,7 +1451,8 @@ def main():
                 _sig_stop_requested = False
                 suppress = _do_manual_stop(proc, session, active)
                 if session is not None:
-                    suppress_auto_start  = suppress
+                    suppress_auto_start    = suppress
+                    suppress_auto_start_at = time.time() if suppress else 0.0
                     in_meeting           = False
                     recording_started_by = None
                     end_pending_at       = 0.0
