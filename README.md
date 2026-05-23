@@ -130,6 +130,8 @@ recorder/recorder --list-devices
 | `make build-recorder` | rebuild Swift binary (ต้องมี Xcode CLT) |
 | `make menu-bar` | build menu bar app → `menu-bar/.build/TeamRecorderBar.app` (ครั้งแรก หรือย้าย repo) |
 | `make menu-bar-install` | build + copy ไปที่ `/Applications/TeamRecorderBar.app` |
+| `make uninstall` | ถอนการติดตั้ง: หยุด watcher, ลบ app, ล้าง preferences + runtime state |
+| `make clean-reinstall` | uninstall แล้ว menu-bar-install ใหม่ในขั้นตอนเดียว |
 | `make dist` | สร้าง `dist/TeamRecorder.zip` — สำหรับเครื่อง developer เท่านั้น (ดู [packaging/README.md](packaging/README.md)) |
 
 **Log & status:** บันทึก log รายวันที่ `~/Library/Logs/Team Recorder/` และเขียน

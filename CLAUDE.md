@@ -261,6 +261,9 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | Setup window appears again after reinstall | `UserDefaults.setupCompleted` is cleared when the app is deleted | Expected — re-run setup to re-grant permissions, then it won't show again |
 | Calendar prompt appears for icalBuddy during setup | macOS grants Calendar per helper process | Expected — allow it during Setup so a live meeting does not trigger it later |
 | Red recording icon persists after watcher crash | `status.json` can outlive the watcher process | Use menu bar → Recover Recorder…; the app validates stale PID/status state |
+| ⚠ menu icon after install from GitHub or different folder | `watcher_path.txt` bakes an absolute path at build time — mismatches break silently | `make menu-bar-install` from the current repo folder; or `make clean-reinstall` for a full reset |
+| Setup Step 3 Calendar — Finish stuck (legacy installs) | Old `icalBuddyPrimed` bool gated Finish if probe failed | Fixed: probe is now advisory only; Finish advances whenever Calendar system permission is granted |
+| icalBuddy probe result in menu differs from Python | Path resolution order mismatch between Swift and Python | Fixed: Swift now checks process env → `.env` → `which` → homebrew (same order as Python `load_dotenv`) |
 
 ---
 

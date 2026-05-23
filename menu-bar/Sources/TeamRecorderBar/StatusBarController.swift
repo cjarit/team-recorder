@@ -18,6 +18,7 @@ class StatusBarController {
     private var changeFolderItem:    NSMenuItem!
     private var lastRecordingItem:   NSMenuItem!
     private var launchAtLoginItem:   NSMenuItem!
+    private var launchWarningItem:   NSMenuItem!   // hidden unless watcher failed to start
 
     // File watcher for status.json
     private var fileSource: DispatchSourceFileSystemObject?
@@ -46,6 +47,16 @@ class StatusBarController {
         )
         titleItem.isEnabled = false
         menu.addItem(titleItem)
+
+        // Launch-failure warning — hidden by default, shown when watcher can't start
+        launchWarningItem = NSMenuItem(
+            title: "⚠ Can't start watcher — Show details…",
+            action: #selector(showLaunchWarning),
+            keyEquivalent: ""
+        )
+        launchWarningItem.target = self
+        launchWarningItem.isHidden = true
+        menu.addItem(launchWarningItem)
 
         menu.addItem(.separator())
 
@@ -158,6 +169,17 @@ class StatusBarController {
         )
         calItem.target = self
         permSubmenu.addItem(calItem)
+
+        permSubmenu.addItem(.separator())
+
+        let retryBuddyItem = NSMenuItem(
+            title: "Retry icalBuddy Access",
+            action: #selector(retryIcalBuddyAccess),
+            keyEquivalent: ""
+        )
+        retryBuddyItem.target = self
+        retryBuddyItem.toolTip = "Re-run the icalBuddy probe. Useful after granting Calendar access in System Settings."
+        permSubmenu.addItem(retryBuddyItem)
 
         permItem.submenu = permSubmenu
         menu.addItem(permItem)
@@ -323,6 +345,7 @@ class StatusBarController {
         updateFolderItems()
         updateLastRecordingItem()
         updateLaunchAtLoginItem()
+        updateLaunchWarning()
         updateIcon()
         notifyIfRecordingSaved(previous: previousStatus, current: currentStatus)
     }
@@ -416,9 +439,61 @@ class StatusBarController {
     }
 
     private func updateIcon() {
-        let state = isStaleRecordingState ? "error" : (currentStatus?.state ?? "idle")
+        let hasError = WatcherManager.shared.lastLaunchError != nil
+        let state = hasError ? "error" : (isStaleRecordingState ? "error" : (currentStatus?.state ?? "idle"))
         statusItem.button?.image   = icon(for: state)
         statusItem.button?.toolTip = tooltipText(for: state)
+    }
+
+    private func updateLaunchWarning() {
+        let hasError = WatcherManager.shared.lastLaunchError != nil
+        launchWarningItem.isHidden = !hasError
+    }
+
+    @objc private func showLaunchWarning() {
+        guard let error = WatcherManager.shared.lastLaunchError else { return }
+        let alert = NSAlert()
+        alert.messageText = "Team Recorder — Can't start watcher"
+        alert.informativeText = error.userDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Run Setup Guide")
+        alert.addButton(withTitle: "Open Project Folder")
+        alert.addButton(withTitle: "Dismiss")
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            SetupWindowController.shared.show()
+        case .alertSecondButtonReturn:
+            if let dir = WatcherManager.shared.projectDirectory {
+                NSWorkspace.shared.open(dir)
+            }
+        default:
+            break
+        }
+    }
+
+    @objc private func retryIcalBuddyAccess() {
+        NSApp.activate(ignoringOtherApps: true)
+        let checking = NSAlert()
+        checking.messageText = "Checking icalBuddy…"
+        checking.informativeText = "Running icalBuddy probe — this may take a few seconds."
+        checking.alertStyle = .informational
+        // Non-blocking: the actual probe runs async; show result in a separate alert
+        PermissionChecker.primeIcalBuddyCalendar(
+            projectDirectory: WatcherManager.shared.projectDirectory
+        ) { ok, detail in
+            DispatchQueue.main.async {
+                let result = NSAlert()
+                result.messageText = ok ? "icalBuddy Access Confirmed" : "icalBuddy Access Advisory"
+                result.informativeText = ok
+                    ? "icalBuddy can read Calendar events. Recordings will be named after meeting titles."
+                    : "icalBuddy probe returned an advisory:\n\(detail)\n\nRecordings may be named \"Teams Meeting\". Grant Calendar access to icalBuddy in System Settings → Privacy & Security → Automation."
+                result.alertStyle = ok ? .informational : .warning
+                result.addButton(withTitle: "OK")
+                NSApp.activate(ignoringOtherApps: true)
+                result.runModal()
+            }
+        }
     }
 
     // MARK: — Icon helpers

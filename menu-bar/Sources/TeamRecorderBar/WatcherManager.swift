@@ -1,6 +1,31 @@
 import AppKit
 import Foundation
 
+/// Reason the watcher failed to start. Read by StatusBarController to show user-visible details.
+enum LaunchError {
+    case missingWatcherPathFile
+    case watcherScriptNotFound(URL)
+    case pythonNotFound
+    case earlyExit(code: Int32, stderr: String)
+    case launchFailed(String)
+
+    var userDescription: String {
+        switch self {
+        case .missingWatcherPathFile:
+            return "watcher_path.txt not found in the app bundle.\nRun `make menu-bar-install` from the project folder."
+        case .watcherScriptNotFound(let url):
+            return "teams_recorder_v2.py not found at:\n\(url.path)\n\nRun `make menu-bar-install` from the correct project folder."
+        case .pythonNotFound:
+            return "python3 not found. Install Python 3 via Homebrew:\n  brew install python"
+        case .earlyExit(let code, let stderr):
+            let detail = stderr.isEmpty ? "(no output)" : stderr.prefix(400).description
+            return "Watcher crashed immediately (exit \(code)):\n\(detail)"
+        case .launchFailed(let reason):
+            return "Failed to launch watcher:\n\(reason)"
+        }
+    }
+}
+
 /// Manages the teams_recorder_v2.py watcher process lifecycle.
 /// "Wrap, don't rewrite" — Python stays the brain; this class is just a launcher + PID tracker.
 class WatcherManager {
@@ -15,6 +40,10 @@ class WatcherManager {
 
     /// Process started by *this* app instance (nil if watcher was launched externally).
     private var managedProcess: Process?
+
+    /// Set when start() fails or the watcher crashes within 3s of launch. Cleared on a new start().
+    /// Read by StatusBarController to show a user-visible error indicator.
+    private(set) var lastLaunchError: LaunchError?
 
     private init() {
         // watcher_path.txt is written into Resources/ by `make menu-bar`
@@ -65,17 +94,37 @@ class WatcherManager {
     // MARK: — Start / Stop
 
     /// Start the Python watcher as a child process.
-    /// No-ops if already running. Logs an error if watcher_path.txt is missing.
+    /// No-ops if already running. Sets lastLaunchError and posts watcherStateChanged on failure.
     func start() {
+        lastLaunchError = nil  // clear any previous error before attempting
+
         guard let url = watcherURL else {
             NSLog("[TeamRecorderBar] watcher_path.txt not found in bundle — run `make menu-bar` again")
+            lastLaunchError = .missingWatcherPathFile
+            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
             return
         }
         guard FileManager.default.fileExists(atPath: url.path) else {
             NSLog("[TeamRecorderBar] teams_recorder_v2.py not found at: \(url.path)")
+            lastLaunchError = .watcherScriptNotFound(url)
+            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
             return
         }
         guard !isRunning else { return }
+
+        // Preflight: confirm python3 is available before constructing the Process
+        let which = Process()
+        which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        which.arguments = ["python3"]
+        which.standardOutput = FileHandle.nullDevice
+        which.standardError  = FileHandle.nullDevice
+        if (try? which.run()) != nil { which.waitUntilExit() }
+        if which.terminationStatus != 0 {
+            NSLog("[TeamRecorderBar] python3 not found — watcher cannot start")
+            lastLaunchError = .pythonNotFound
+            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+            return
+        }
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -83,22 +132,43 @@ class WatcherManager {
         // Run from the project directory so relative .env lookup works
         p.currentDirectoryURL = url.deletingLastPathComponent()
         p.environment = ProcessInfo.processInfo.environment.merging(["NOTIFY": "0"]) { $1 }
-        // stdout/stderr → the existing daily log file the Python watcher manages itself
         p.standardOutput = FileHandle.nullDevice
-        p.standardError  = FileHandle.nullDevice
 
-        p.terminationHandler = { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.managedProcess = nil
-                NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+        // Capture stderr into a pipe so early crashes produce user-visible detail
+        let stderrPipe = Pipe()
+        p.standardError = stderrPipe
+
+        let launchedAt = Date()
+        p.terminationHandler = { [weak self] process in
+            let code = process.terminationStatus
+            let elapsed = Date().timeIntervalSince(launchedAt)
+            // Early crash: read stderr synchronously (pipe is closed, readDataToEndOfFile won't block)
+            DispatchQueue.global(qos: .utility).async {
+                var stderrStr = ""
+                if elapsed < 3 && code != 0 {
+                    let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    stderrStr = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    NSLog("[TeamRecorderBar] watcher early-exit (code \(code)): \(stderrStr)")
+                }
+                DispatchQueue.main.async {
+                    self?.managedProcess = nil
+                    if elapsed < 3 && code != 0 {
+                        self?.lastLaunchError = .earlyExit(code: code, stderr: stderrStr)
+                    }
+                    NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+                }
             }
         }
 
         do {
             try p.run()
             managedProcess = p
+            NSLog("[TeamRecorderBar] watcher started (pid \(p.processIdentifier))")
         } catch {
             NSLog("[TeamRecorderBar] Failed to launch watcher: \(error)")
+            lastLaunchError = .launchFailed(error.localizedDescription)
+            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
         }
     }
 

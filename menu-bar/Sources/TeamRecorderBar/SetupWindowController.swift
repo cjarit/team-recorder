@@ -5,13 +5,20 @@ import CoreGraphics
 /// Floats above other windows. Idempotent: calling show() again brings it to front.
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
+    private enum IcalBuddyProbeState {
+        case notRun
+        case running
+        case verified
+        case warning(detail: String)
+    }
+
     static let shared = SetupWindowController()
 
     private var currentStep = 0
     /// ป้องกัน recursion: windowWillClose → completeSetupAndStartWatcher → close → windowWillClose
     private var completingSetup = false
     private var screenRecordingRequestedThisSession = false
-    private var icalBuddyPrimed = false
+    private var icalBuddyProbeState: IcalBuddyProbeState = .notRun
 
     // UI refs — set in buildUI(), safe to use after init
     private var stepLabel:        NSTextField!
@@ -109,7 +116,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         currentStep = 0
-        icalBuddyPrimed = false
+        icalBuddyProbeState = .notRun
         win.center()
         refreshStep()
         // ชั่วคราว switch เป็น .regular เพื่อให้ window ขึ้น front ได้
@@ -260,11 +267,21 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         descLabel.stringValue         = info.desc
         instructionsLabel.stringValue = info.instructions
         continueButton.title          = isLast ? "Finish" : "Continue →"
+        // Step 3 skip clarifies what skipping costs vs earlier steps
+        skipButton.title = isLast ? "Use system permission only" : "Skip for Now"
 
         // relaunchButton — step 0 only
         relaunchButton.isHidden = (currentStep != 0)
 
         refreshStatus()
+
+        // Step 3 entry: auto-run probe if Calendar already granted from a prior session.
+        // The requestCalendar callback won't fire in that case, so we trigger explicitly here.
+        if isLast,
+           PermissionChecker.calendar() == .granted,
+           case .notRun = icalBuddyProbeState {
+            runIcalBuddyProbe()
+        }
     }
 
     private func refreshStatus() {
@@ -287,8 +304,21 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             statusText.stringValue = "Not yet requested"
         }
 
+        // Step 3 Calendar: overlay icalBuddy probe state on the status text
+        if currentStep == 2 && status == .granted {
+            switch icalBuddyProbeState {
+            case .notRun, .running:
+                statusText.stringValue = "Checking icalBuddy calendar access…"
+            case .verified:
+                statusText.stringValue = "Calendar verified — icalBuddy can read events."
+            case .warning:
+                statusText.stringValue = "Calendar granted. Retry icalBuddy Access if recordings are named \"Teams Meeting\"."
+            }
+        }
+
         // primaryButton — single action, title/target changes by step+state
-        if currentStep == 2 && status == .granted && !icalBuddyPrimed {
+        if currentStep == 2 && status == .granted {
+            // Always show retry on step 3; result is advisory-only and never gates Finish
             primaryButton.isHidden = false
             primaryButton.title = "Retry icalBuddy Access"
         } else if status == .granted {
@@ -355,8 +385,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             }
         } else if info.grantsInApp && status == .undetermined {
             grantAccess()
-        } else if currentStep == 2 && status == .granted && !icalBuddyPrimed {
-            primeIcalBuddyAndRefresh()
+        } else if currentStep == 2 && status == .granted {
+            // Retry icalBuddy probe — reset so runIcalBuddyProbe() runs again
+            icalBuddyProbeState = .notRun
+            runIcalBuddyProbe()
         } else {
             openSettings()
         }
@@ -370,26 +402,24 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             }
         default:
             PermissionChecker.requestCalendar { [weak self] _ in
-                self?.primeIcalBuddyAndRefresh()
+                self?.runIcalBuddyProbe()
             }
         }
     }
 
-    private func primeIcalBuddyAndRefresh() {
-        guard !icalBuddyPrimed else {
-            refreshStatus()
-            return
-        }
-        statusText.stringValue = "Checking icalBuddy calendar access…"
+    private func runIcalBuddyProbe() {
+        guard case .notRun = icalBuddyProbeState else { return }
+        icalBuddyProbeState = .running
+        refreshStatus()
         PermissionChecker.primeIcalBuddyCalendar(
             projectDirectory: WatcherManager.shared.projectDirectory
         ) { [weak self] ok, detail in
             guard let self else { return }
-            self.icalBuddyPrimed = ok
+            self.icalBuddyProbeState = ok ? .verified : .warning(detail: detail)
+            UserDefaults.standard.set(ok, forKey: "icalBuddyVerified")
             self.refreshStatus()
             if !ok {
-                self.statusText.stringValue = "Calendar granted, but icalBuddy needs access — click Retry icalBuddy Access"
-                NSLog("[TeamRecorderBar] icalBuddy calendar prime failed: \(detail)")
+                NSLog("[TeamRecorderBar] icalBuddy calendar probe: advisory warning — \(detail)")
             }
         }
     }
@@ -445,12 +475,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
         if currentStep == 0 && PermissionChecker.screenRecording() != .granted {
             primaryTapped()
-            return
-        }
-        if currentStep == steps.count - 1
-            && PermissionChecker.calendar() == .granted
-            && !icalBuddyPrimed {
-            primeIcalBuddyAndRefresh()
             return
         }
         if currentStep < steps.count - 1 {

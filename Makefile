@@ -2,7 +2,7 @@ PYTHON      := python3
 MENU_BAR_APP = menu-bar/.build/TeamRecorderBar.app
 DIST_DIR     = dist
 
-.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install dist icon reset-setup
+.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install dist icon reset-setup uninstall clean-reinstall
 
 run:
 	$(PYTHON) teams_recorder_v2.py
@@ -70,6 +70,34 @@ icon:
 reset-setup:
 	@defaults delete com.team-recorder.menu-bar setupCompleted 2>/dev/null || true
 	@echo "  ✓  Setup state reset — เปิดแอปใหม่เพื่อรัน Setup Guide"
+
+uninstall:
+	@echo "  ⏳  Stopping watcher and quitting app..."
+	-@$(PYTHON) teams_recorder_v2.py --stop 2>/dev/null || true
+	-@osascript -e 'tell application "TeamRecorderBar" to quit' 2>/dev/null || true
+	@sleep 0.5
+	@echo "  ⏳  Removing app and preferences..."
+	-@rm -rf /Applications/TeamRecorderBar.app
+	-@defaults delete com.team-recorder.menu-bar 2>/dev/null || true
+	-@rm -f "$(HOME)/Library/Preferences/com.team-recorder.menu-bar.plist"
+	@echo "  ⏳  Clearing runtime state (status.json, PID files)..."
+	-@rm -f "$(HOME)/Library/Application Support/Team Recorder/status.json"
+	-@rm -f "$(HOME)/Library/Application Support/Team Recorder/team-recorder.pid"
+	-@rm -f "$(HOME)/Library/Application Support/Team Recorder/recorder.pid"
+	@echo ""
+	@echo "  ✓  Team Recorder uninstalled."
+	@echo ""
+	@echo "  ⚠  Recordings in ~/Documents/Teams Recording/ are NOT removed."
+	@echo ""
+	@echo "  To also clear macOS permissions, revoke manually in System Settings:"
+	@echo "    Privacy & Security → Screen Recording  → TeamRecorderBar → click −"
+	@echo "    Privacy & Security → Microphone         → TeamRecorderBar → toggle off"
+	@echo "    Privacy & Security → Calendars          → TeamRecorderBar → None"
+	@echo "    Privacy & Security → Automation         → icalBuddy → toggle off"
+	@echo ""
+	@echo "  To reinstall: make menu-bar-install"
+
+clean-reinstall: uninstall menu-bar-install
 
 dist: menu-bar
 	@mkdir -p "$(DIST_DIR)"
