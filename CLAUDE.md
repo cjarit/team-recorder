@@ -1,0 +1,265 @@
+# CLAUDE.md — Team Recorder
+
+> AI context file for Claude Code, Cursor, and any AI coding assistant.
+> Read this before touching any file in this project.
+
+---
+
+## What This Project Does
+
+macOS-only tool that watches for Microsoft Teams meetings and automatically records audio — no OBS required. When a meeting ends, it renames the recording file using the meeting title from Apple Calendar.
+
+**One-line summary:** Start the script, join your Teams call, recording starts and stops automatically, file is named after the meeting.
+
+**Users:** Designers and non-developers on a Thai team. They run this daily.
+
+**Stack:** Python polling loop + Swift binary (`recorder/recorder`) that captures audio via ScreenCaptureKit (macOS 13+) and AVAudioEngine. No OBS. No virtual audio drivers. Optional menu bar app (`menu-bar/`) reads `status.json` and wraps the watcher.
+
+---
+
+## File Map
+
+```
+Team Recorder/
+├── teams_recorder_v2.py     Main runtime — do not refactor
+├── test_recorder_v2.py      Unit tests (76 pass, 3 skipped)
+├── recorder/
+│   ├── recorder             Compiled Swift binary — committed to repo
+│   ├── main.swift           Swift source (Sources/recorder/main.swift)
+│   ├── Package.swift        SPM manifest
+│   └── entitlements.plist   Code signing entitlements (screen capture + mic)
+├── menu-bar/                Phase 3 — status bar app (reads status.json)
+│   ├── Package.swift        SPM manifest (macOS 13+, no external deps)
+│   ├── Resources/Info.plist LSUIElement=YES, bundle id, min OS
+│   └── Sources/TeamRecorderBar/
+│       ├── main.swift                NSApplication entry point
+│       ├── AppDelegate.swift         applicationDidFinishLaunching; first-run gating
+│       ├── StatusBarController.swift NSStatusItem + menu + file watcher
+│       ├── WatcherManager.swift      launch/stop Python watcher; PID file check
+│       ├── RecorderStatus.swift      Codable mirror of status.json schema
+│       ├── PermissionChecker.swift   CGPreflightScreenCaptureAccess, AVCapture, EKEventStore
+│       └── SetupWindowController.swift  step-by-step first-run permission guide
+├── setup.sh                 One-command setup for new machines
+├── Makefile                 make run / test / setup / build-recorder / menu-bar
+├── .env.example             Config template — safe to commit
+├── .env                     Local config — NEVER commit
+├── Start Recorder.command   Double-click to launch (macOS)
+├── README.md                Setup guide
+└── CLAUDE.md                This file
+```
+
+---
+
+## Quick Commands
+
+```bash
+make run                  # start recorder (Ctrl+C to stop)
+make test                 # run unit tests
+make setup                # first-time setup on a new machine
+make build-recorder       # rebuild Swift binary (needs Xcode CLT)
+make doctor               # read-only health check (permissions, disk, binary)
+make permissions          # open the System Settings panes for required permissions
+make stop                 # stop a running watcher (reads the PID file)
+make index                # generate index.html listing all recordings
+make menu-bar             # build TeamRecorderBar.app → menu-bar/.build/
+make menu-bar-install     # build + copy to /Applications/
+```
+
+---
+
+## Architecture
+
+```
+Teams meeting detected (UDP connections ≥ 4)
+    ↓
+teams_recorder_v2.py sends "start <path>" to recorder binary via stdin
+    ↓
+recorder binary (Swift) starts ScreenCaptureKit + AVAudioEngine
+    ↓
+stdout → "STARTED"
+    ↓
+[meeting in progress — binary writes AAC 96kbps to .m4a]
+    ↓
+UDP drops → wait STOP_GRACE=8s (prevents false stops)
+    ↓
+Python sends "stop" via stdin → stdout → "STOPPED_OK" (file fully flushed)
+    ↓
+Python renames file: {meeting_name} - {HH-MM_DD-MM-YYYY}.m4a
+```
+
+### stdin/stdout protocol (Python ↔ binary)
+
+```
+stdin  → "start /absolute/path/output.m4a\n"   stdout → "STARTED\n"
+stdin  → "stop\n"                               stdout → "STOPPED_OK\n"
+                                                      or "STOPPED_ERROR: <reason>\n"
+errors                                          stderr → "ERROR: <token>\n"
+```
+
+**STOPPED_OK is the sync point** — Python only renames the file after receiving STOPPED_OK.
+On STOPPED_ERROR, Python marks the file as INCOMPLETE_ instead of renaming it normally.
+Never rename before a stop response is confirmed.
+
+### recorder binary CLI modes
+
+```bash
+recorder                      # long-lived stdin protocol (used by Python)
+recorder --check              # prints OK + arch + macOS version, exits 0/1
+recorder --list-devices       # UID<TAB>name [input/output], one per line
+recorder --device <UID>       # override mic input device (system audio unaffected)
+recorder --request-permission # trigger Screen Recording dialog (may open under Terminal)
+```
+
+### Error tokens (stderr)
+
+| Token | Meaning |
+|-------|---------|
+| `ERROR: already_recording` | `start` sent while already recording |
+| `ERROR: disk_space_low` | < 200 MB free on output drive |
+| `ERROR: screen_recording_permission_denied` | SCK permission not granted |
+
+---
+
+## Key Files — Rules
+
+### `teams_recorder_v2.py` — DO NOT refactor the main loop
+
+This is the daily production runtime. The polling loop, SIGINT/SIGTERM handling, and grace period logic are tuned from real-world testing. **Bug fixes only** — no async/await, no restructuring.
+
+### `recorder/recorder` — committed binary
+
+The compiled binary is committed to the repo so teammates can clone and run immediately without building. Rebuild only when Swift source changes:
+
+```bash
+make build-recorder   # builds + re-signs (codesign step is required on macOS 26+)
+```
+
+After rebuilding, commit `recorder/recorder`. The binary is ~1 MB and arch-specific (arm64 or x86_64).
+
+### `menu-bar/` — status bar app (Phase 3)
+
+**Architecture: wrap, don't rewrite.** The app launches and monitors the Python watcher; Python stays the brain. It reads `status.json` (the Phase 1A contract) — **never parses logs.**
+
+Key files:
+- `StatusBarController` — owns `NSStatusItem`; watches `status.json` via `DispatchSourceFileSystemObject` + 5s poll fallback. Atomic writes (Python's `os.replace`) trigger a `.rename` event — the handler re-attaches the source after a 0.2s settle delay. Contains "Launch at Login" (`SMAppService`) and "Setup Guide…" menu items.
+- `WatcherManager` — reads `watcher_path.txt` from bundle Resources (written by `make menu-bar` with the absolute path to `teams_recorder_v2.py`). Falls back to the PID file to detect externally-launched watchers.
+- `RecorderStatus` — `Codable` struct mirroring the exact schema from `write_status()`.
+- `PermissionChecker` — static helpers using `CGPreflightScreenCaptureAccess()`, `AVCaptureDevice.authorizationStatus`, and `EKEventStore.authorizationStatus`. All request functions call back on the main thread.
+- `SetupWindowController` — singleton `NSWindowController`; shown on first launch (`setupCompleted` key absent from `UserDefaults`). Three steps: Screen Recording → Microphone → Calendar. Starts watcher on completion.
+- `AppDelegate` — gates `autoStartIfNeeded()` on `UserDefaults.setupCompleted`; shows setup window on first launch and on re-open if setup is incomplete.
+
+**`watcher_path.txt`** is embedded in the `.app` bundle at build time (by the Makefile using `$(pwd)`). If you move the repo, run `make menu-bar` again. The `.app` bundle is **not** committed — build it locally with `make menu-bar`.
+
+### `recorder/Sources/recorder/main.swift` — Swift source
+
+~700 lines. Key sections:
+- `RecorderEngine` class — manages AVAssetWriter, SCK stream, AVAudioEngine
+- `start(path:)` — throws `RecorderError` on failure; never emits STARTED on error
+- `buildSCKStream()` — pure factory; fetches shareable content, configures stream, calls `startCapture`; no self-mutation; safe on any queue; used by both `startSCK()` and the restart path
+- `startSCK()` — thin wrapper: calls `buildSCKStream()` then assigns `sckStream` + calls `registerSCKWakeObserver()` (normal start path only)
+- `registerSCKWakeObserver()` — registers `NSWorkspace.didWakeNotification` on `.main`; defensively removes any existing observer first; must be called on the main queue
+- `handleSCKStreamStop(_:)` — called on main from `didStopWithError` and wake observer; captures+clears old stream on main; background queue stops old stream + calls `buildSCKStream()`; main-queue second gate (`isRecording && sckRestartPending`) before installing new stream — discards stream if recording ended during restart window
+- `sckRestartPending` — prevents concurrent restarts; reads/writes on main queue for the restart path; cleared in `stopSCK()`
+- **Threading note:** the restart path (`handleSCKStreamStop`) keeps all SCK state mutations on main. The normal start/stop path (`startSCK`, `stopSCK`) runs on the stdin protocol queue (background) — pre-existing behaviour, not introduced by Phase 2B.
+- `startCapture` error captured and rethrown after `sema.wait()`
+- `emit(_:)` — uses `Darwin.write()` for unbuffered stdout (not `print()`)
+
+---
+
+## Tuned Constants — Do NOT Change Without Real-World Testing
+
+```python
+POLL_INTERVAL    = 3    # seconds — 5 was too slow to detect meeting start
+STOP_GRACE       = 8    # seconds before confirming meeting ended
+                        # prevents false stops from momentary UDP drops
+MIN_DURATION     = 180  # seconds — shorter = "Teams Call (Short)" (accidental)
+UDP_MEET_THRESH  = 4    # established UDP connections = in meeting
+                        # background Teams = 1-2, active meeting = 4+ (RTP/STUN/TURN)
+DISK_ABORT_MB    = 200  # must match kMinFreeBytes in Swift binary
+DISK_WARN_MB     = 500  # warn early, still start recording
+```
+
+If UDP false-triggers become an issue: raise `UDP_MEET_THRESH` to 5 or 6. Do not lower it.
+
+Calendar matching is **not** a tunable constant — `find_matching_meeting()` matches a
+recording to a calendar event by interval containment with a fixed ±5-minute slack.
+
+`DISK_ABORT_MB = 200` **must stay in sync** with `kMinFreeBytes` in `main.swift`. If you change one, change both.
+
+---
+
+## Environment Variables (`.env`)
+
+```bash
+RECORDING_DIR=          # folder for recordings (default: ~/Documents/Teams Recording)
+ICAL_BUDDY_PATH=        # optional: full path to icalBuddy if not in PATH
+RECORDER_BIN=           # optional: override path to recorder binary
+AUDIO_INPUT_DEVICE_UID= # optional: mic UID from recorder --list-devices
+                        # affects mic input only — system audio always uses SCK default
+```
+
+Get mic UID: `recorder/recorder --list-devices`
+
+---
+
+## macOS-Only Constraints — Do NOT Change
+
+| Tool | Why | Do not replace with |
+|------|-----|---------------------|
+| `lsof` | Lists open UDP connections by PID | psutil, netstat |
+| `pgrep -x MSTeams` | Finds Teams process | psutil, subprocess alternatives |
+| `icalBuddy` | Reads Apple Calendar directly (no app needed) | JXA, AppleScript, caldav |
+| `ScreenCaptureKit` | System audio capture without virtual drivers | BlackHole, soundflower |
+| `SMAppService.mainApp` | macOS 13+ Login Item — menu bar toggle, no plist editing | LaunchAgent .plist, systemd, cron |
+
+**Why not JXA/AppleScript for calendar?** JXA hangs when Calendar app is closed. icalBuddy reads EventKit store directly — confirmed production issue, do not revert.
+
+---
+
+## Thai Comments — Keep Them
+
+Inline Thai comments are team knowledge from real testing sessions. They explain *why* specific values and behaviours were chosen. Do not remove or translate them. New code: English docstring above function, Thai inline notes inside for nuances.
+
+---
+
+## Test Coverage
+
+```
+test_recorder_v2.py — 76 passed, 3 skipped
+```
+
+The 3 skipped tests are `@LIVE_SMOKE` — require a real binary and Screen Recording permission. Run with `RUN_LIVE_SMOKE=1 make test`.
+
+Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMock` — do not require real system tools.
+
+---
+
+## Known Issues / Gotchas
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `[WARN] teams_recorder กำลังทำงานอยู่` on fresh start | `pgrep -f` matches the current process via Python argv | Expected — self-PID is filtered, other PIDs are real conflicts |
+| Recording named "Teams Meeting" | Terminal lacks Calendar permission | System Settings → Privacy & Security → Calendars → enable Terminal (or TeamRecorderBar) |
+| Binary SIGKILL on macOS 26 | `swift build` produces linker-signed ad-hoc (rejected) | `make build-recorder` re-signs with plain adhoc + entitlements |
+| System audio silent after sleep/wake | SCK stream stops on display reconnect | Phase 2B: `handleSCKStreamStop` restarts stream in-place; requires real lid-close test to verify |
+| Wrong arch binary | Binary built on different machine (arm64 vs x86_64) | `make build-recorder` on this machine, then commit |
+| Mic silent but recording continues | Mic unavailable or permission denied | Non-fatal by design — system audio still captured; check mic permission |
+| Quitting TeamRecorderBar stops the watcher | Watcher was auto-started by the app (managed process) | Expected — `stopManagedOnly()` only terminates processes the app itself started; `make run` watchers are unaffected |
+| "Launch at Login" toggle fails | App is not in `/Applications/` | `make menu-bar-install` copies to `/Applications/` and then opens the app |
+| Setup window appears again after reinstall | `UserDefaults.setupCompleted` is cleared when the app is deleted | Expected — re-run setup to re-grant permissions, then it won't show again |
+
+---
+
+## Code Signing Note
+
+macOS 26 rejects `swift build` output with SIGKILL unless re-signed:
+
+```bash
+codesign -s - --force --entitlements recorder/entitlements.plist recorder/recorder
+```
+
+`make build-recorder` does this automatically. Never skip the codesign step.
+
+Entitlements required:
+- `com.apple.security.device.screen-capture`
+- `com.apple.security.device.microphone`

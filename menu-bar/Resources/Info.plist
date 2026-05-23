@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- ซ่อน Dock icon — นี่คือ menu bar only app -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>CFBundleIdentifier</key>
+    <string>com.team-recorder.menu-bar</string>
+    <key>CFBundleName</key>
+    <string>Team Recorder</string>
+    <key>CFBundleDisplayName</key>
+    <string>Team Recorder</string>
+    <key>CFBundleExecutable</key>
+    <string>TeamRecorderBar</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Team Recorder</string>
+    <!-- Usage strings ที่ macOS ต้องการก่อนแสดง permission dialog -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Team Recorder records your microphone during Microsoft Teams meetings.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Team Recorder reads your calendar to name recordings after the meeting title.</string>
+    <!-- macOS 14+ full-access key (ต้องมีคู่กับ NSCalendarsUsageDescription) -->
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Team Recorder reads your calendar to name recordings after the meeting title.</string>
+</dict>
+</plist>

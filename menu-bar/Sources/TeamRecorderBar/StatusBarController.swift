@@ -1,0 +1,504 @@
+import AppKit
+import ServiceManagement
+
+/// Owns the NSStatusItem and all menu interactions.
+/// Refreshed on every status.json write (via DispatchSourceFileSystemObject)
+/// and by a 5-second poll fallback for when the file doesn't exist yet.
+class StatusBarController {
+    private let statusItem: NSStatusItem
+
+    // Dynamically updated menu items
+    private var statusLine:          NSMenuItem!
+    private var startRecordingItem:  NSMenuItem!
+    private var stopRecordingItem:   NSMenuItem!
+    private var toggleItem:          NSMenuItem!
+    private var folderPathItem:      NSMenuItem!   // shows current RECORDING_DIR (disabled)
+    private var changeFolderItem:    NSMenuItem!
+    private var lastRecordingItem:   NSMenuItem!
+    private var launchAtLoginItem:   NSMenuItem!
+
+    // File watcher for status.json
+    private var fileSource: DispatchSourceFileSystemObject?
+    private var pollTimer:  Timer?
+
+    private var currentStatus: RecorderStatus?
+
+    init() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        buildMenu()
+        startWatching()
+        refresh()
+    }
+
+    // MARK: — Menu construction
+
+    private func buildMenu() {
+        let menu = NSMenu()
+
+        // Bold title row
+        let titleItem = NSMenuItem()
+        titleItem.attributedTitle = NSAttributedString(
+            string: "Team Recorder",
+            attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]
+        )
+        titleItem.isEnabled = false
+        menu.addItem(titleItem)
+
+        menu.addItem(.separator())
+
+        // Live status line
+        statusLine = NSMenuItem(title: "Checking…", action: nil, keyEquivalent: "")
+        statusLine.isEnabled = false
+        menu.addItem(statusLine)
+
+        menu.addItem(.separator())
+
+        // Manual recording controls
+        startRecordingItem = NSMenuItem(
+            title: "▶  Start Recording",
+            action: #selector(startRecording),
+            keyEquivalent: ""
+        )
+        startRecordingItem.target = self
+        menu.addItem(startRecordingItem)
+
+        stopRecordingItem = NSMenuItem(
+            title: "■  Stop Recording",
+            action: #selector(stopRecording),
+            keyEquivalent: ""
+        )
+        stopRecordingItem.target = self
+        menu.addItem(stopRecordingItem)
+
+        menu.addItem(.separator())
+
+        // Watcher start/stop toggle
+        toggleItem = NSMenuItem(
+            title: "Start Watcher",
+            action: #selector(toggleWatcher),
+            keyEquivalent: ""
+        )
+        toggleItem.target = self
+        menu.addItem(toggleItem)
+
+        // Recordings folder submenu
+        let folderItem = NSMenuItem(title: "📁  Recordings Folder", action: nil, keyEquivalent: "")
+        let folderSubmenu = NSMenu()
+
+        folderPathItem = NSMenuItem(title: "~/Documents/Teams Recording", action: nil, keyEquivalent: "")
+        folderPathItem.isEnabled = false
+        folderSubmenu.addItem(folderPathItem)
+
+        let openFolderItem = NSMenuItem(
+            title: "Open Folder",
+            action: #selector(openRecordingsFolder),
+            keyEquivalent: ""
+        )
+        openFolderItem.target = self
+        folderSubmenu.addItem(openFolderItem)
+
+        folderSubmenu.addItem(.separator())
+
+        changeFolderItem = NSMenuItem(
+            title: "Change Folder…",
+            action: #selector(changeRecordingsFolder),
+            keyEquivalent: ""
+        )
+        changeFolderItem.target = self
+        folderSubmenu.addItem(changeFolderItem)
+
+        folderItem.submenu = folderSubmenu
+        menu.addItem(folderItem)
+
+        menu.addItem(.separator())
+
+        // Last recording — clickable when a path is available
+        lastRecordingItem = NSMenuItem(title: "No recordings yet", action: nil, keyEquivalent: "")
+        lastRecordingItem.isEnabled = false
+        menu.addItem(lastRecordingItem)
+
+        menu.addItem(.separator())
+
+        // Permissions submenu
+        let permItem = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
+        let permSubmenu = NSMenu()
+
+        let screenItem = NSMenuItem(
+            title: "Screen Recording…",
+            action: #selector(openPermScreenRecording),
+            keyEquivalent: ""
+        )
+        screenItem.target = self
+        permSubmenu.addItem(screenItem)
+
+        let micItem = NSMenuItem(
+            title: "Microphone…",
+            action: #selector(openPermMicrophone),
+            keyEquivalent: ""
+        )
+        micItem.target = self
+        permSubmenu.addItem(micItem)
+
+        let calItem = NSMenuItem(
+            title: "Calendar…",
+            action: #selector(openPermCalendar),
+            keyEquivalent: ""
+        )
+        calItem.target = self
+        permSubmenu.addItem(calItem)
+
+        permItem.submenu = permSubmenu
+        menu.addItem(permItem)
+
+        // Setup Guide — re-opens the step-by-step permission window
+        let setupItem = NSMenuItem(
+            title: "Setup Guide…",
+            action: #selector(openSetupGuide),
+            keyEquivalent: ""
+        )
+        setupItem.target = self
+        menu.addItem(setupItem)
+
+        menu.addItem(.separator())
+
+        // Launch at Login toggle
+        launchAtLoginItem = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: ""
+        )
+        launchAtLoginItem.target = self
+        menu.addItem(launchAtLoginItem)
+
+        // Quit
+        menu.addItem(NSMenuItem(
+            title: "Quit",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        ))
+
+        statusItem.menu = menu
+    }
+
+    // MARK: — Actions
+
+    @objc private func startRecording() {
+        WatcherManager.shared.startRecording()
+    }
+
+    @objc private func stopRecording() {
+        WatcherManager.shared.stopRecording()
+    }
+
+    @objc private func toggleWatcher() {
+        WatcherManager.shared.toggle()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    @objc private func openRecordingsFolder() {
+        if let path = currentStatus?.lastRecordingPath {
+            let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+            NSWorkspace.shared.open(dir)
+            return
+        }
+        NSWorkspace.shared.open(WatcherManager.shared.recordingDirectory())
+    }
+
+    @objc private func changeRecordingsFolder() {
+        NSApp.activate(ignoringOtherApps: true)   // bring picker above other windows
+        let panel = NSOpenPanel()
+        panel.canChooseFiles       = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt               = "Choose Folder"
+        panel.message              = "Select the folder where recordings will be saved"
+        panel.directoryURL         = WatcherManager.shared.recordingDirectory()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        WatcherManager.shared.setRecordingDir(url)
+        // Update the path display optimistically — next refresh will confirm
+        folderPathItem.title = abbreviatedPath(url.path)
+    }
+
+    @objc private func openLastRecording() {
+        guard let path = currentStatus?.lastRecordingPath else { return }
+        NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
+    }
+
+    @objc private func openPermScreenRecording() {
+        openPrefPane("Privacy_ScreenCapture")
+    }
+    @objc private func openPermMicrophone() {
+        openPrefPane("Privacy_Microphone")
+    }
+    @objc private func openPermCalendar() {
+        openPrefPane("Privacy_Calendars")
+    }
+    private func openPrefPane(_ pane: String) {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: — File watching
+
+    private func startWatching() {
+        watchFile()
+        // 5-second poll fallback handles startup (file may not exist yet) and missed events.
+        // Also re-attaches the DispatchSource if watchFile() returned early because the
+        // file was absent when the app launched.
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.refresh()
+            if self?.fileSource == nil {
+                self?.watchFile()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refresh),
+            name: .watcherStateChanged,
+            object: nil
+        )
+    }
+
+    private func watchFile() {
+        let path = RecorderStatus.statusFileURL.path
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return }  // File absent — poll timer will retry
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .delete, .rename],
+            queue: .main
+        )
+        source.setEventHandler { [weak self, weak source] in
+            self?.refresh()
+            // Atomic writes (Python's os.replace) trigger rename; re-attach after settle
+            let data = source?.data ?? []
+            if data.contains(.delete) || data.contains(.rename) {
+                source?.cancel()
+                self?.fileSource = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self?.watchFile()
+                }
+            }
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        fileSource = source
+    }
+
+    @objc func refresh() {
+        currentStatus = RecorderStatus.load()
+        updateStatusLine()
+        updateControlItems()
+        updateFolderItems()
+        updateLastRecordingItem()
+        updateLaunchAtLoginItem()
+        updateIcon()
+    }
+
+    // MARK: — Menu updates
+
+    private func updateStatusLine() {
+        let s = currentStatus
+        guard let s else {
+            statusLine.title = WatcherManager.shared.isRunning
+                ? "○ Watcher running — no status yet"
+                : "○ Idle — watcher not running"
+            return
+        }
+        switch s.state {
+        case "recording":
+            let name = s.meetingName ?? "Meeting"
+            statusLine.title = "● Recording: \(name)"
+        case "stopping":
+            statusLine.title = "◌ Stopping…"
+        case "waiting":
+            statusLine.title = "○ Waiting for Teams meeting…"
+        case "error":
+            let err   = s.lastError ?? "Unknown error"
+            let short = err.count > 60 ? String(err.prefix(57)) + "…" : err
+            statusLine.title = "⚠ Error: \(short)"
+        default:
+            statusLine.title = "○ Idle"
+        }
+    }
+
+    /// Update all three watcher/recording control items together.
+    private func updateControlItems() {
+        let state     = currentStatus?.state ?? "idle"
+        let running   = WatcherManager.shared.isRunning
+        let recording = state == "recording"
+        let stopping  = state == "stopping"
+
+        // ▶ Start Recording: enabled when watcher is up and not already recording/stopping
+        startRecordingItem.isEnabled = running && !recording && !stopping
+
+        // ■ Stop Recording: enabled only while recording
+        stopRecordingItem.isEnabled = recording
+
+        // Start/Stop Watcher toggle
+        if WatcherManager.shared.watcherURL == nil {
+            toggleItem.title     = "Watcher not configured"
+            toggleItem.isEnabled = false
+        } else {
+            toggleItem.title     = running ? "Stop Watcher" : "Start Watcher"
+            toggleItem.isEnabled = true
+        }
+    }
+
+    private func updateFolderItems() {
+        let dir = WatcherManager.shared.recordingDirectory()
+        folderPathItem.title = abbreviatedPath(dir.path)
+
+        // Disable "Change Folder…" while a recording is active or stopping
+        let state = currentStatus?.state ?? "idle"
+        changeFolderItem.isEnabled = state != "recording" && state != "stopping"
+    }
+
+    private func updateLastRecordingItem() {
+        guard let name = currentStatus?.lastRecordingName else {
+            lastRecordingItem.title    = "No recordings yet"
+            lastRecordingItem.isEnabled = false
+            lastRecordingItem.action   = nil
+            return
+        }
+        var label = "Last: \(name)"
+        if let savedAt = currentStatus?.lastSavedAt, savedAt.count >= 16 {
+            let time = String(savedAt.dropFirst(11).prefix(5))  // "HH:MM"
+            label += " (\(time))"
+        }
+        lastRecordingItem.title = label
+        if currentStatus?.lastRecordingPath != nil {
+            lastRecordingItem.isEnabled = true
+            lastRecordingItem.action    = #selector(openLastRecording)
+            lastRecordingItem.target    = self
+        } else {
+            lastRecordingItem.isEnabled = false
+        }
+    }
+
+    private func updateIcon() {
+        let state = currentStatus?.state ?? "idle"
+        statusItem.button?.image   = icon(for: state)
+        statusItem.button?.toolTip = tooltipText(for: state)
+    }
+
+    // MARK: — Icon helpers
+
+    private func icon(for state: String) -> NSImage? {
+        let size = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        switch state {
+        case "recording":
+            let colorConf = NSImage.SymbolConfiguration(hierarchicalColor: .systemRed)
+            return NSImage(systemSymbolName: "record.circle.fill",
+                           accessibilityDescription: "Recording")?
+                .withSymbolConfiguration(size.applying(colorConf))
+        case "stopping":
+            let colorConf = NSImage.SymbolConfiguration(hierarchicalColor: .secondaryLabelColor)
+            return NSImage(systemSymbolName: "stop.circle",
+                           accessibilityDescription: "Stopping")?
+                .withSymbolConfiguration(size.applying(colorConf))
+        case "error":
+            let colorConf = NSImage.SymbolConfiguration(hierarchicalColor: .systemOrange)
+            return NSImage(systemSymbolName: "exclamationmark.circle.fill",
+                           accessibilityDescription: "Error")?
+                .withSymbolConfiguration(size.applying(colorConf))
+        default:
+            let img = NSImage(systemSymbolName: "waveform.circle",
+                              accessibilityDescription: "Team Recorder")?
+                .withSymbolConfiguration(size)
+            img?.isTemplate = true
+            return img
+        }
+    }
+
+    private func tooltipText(for state: String) -> String {
+        switch state {
+        case "recording":
+            let name = currentStatus?.meetingName ?? "Meeting"
+            return "Team Recorder — Recording: \(name)"
+        case "stopping":  return "Team Recorder — Stopping…"
+        case "waiting":   return "Team Recorder — Waiting for Teams meeting"
+        case "error":     return "Team Recorder — Error (click for details)"
+        default:          return "Team Recorder"
+        }
+    }
+
+    // MARK: — Helpers
+
+    /// Shorten a path for display: ~/Documents/… instead of /Users/name/Documents/…
+    private func abbreviatedPath(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        if path.hasPrefix(home) {
+            return "~" + String(path.dropFirst(home.count))
+        }
+        return path
+    }
+
+    // MARK: — Setup Guide & Launch at Login
+
+    @objc private func openSetupGuide() {
+        SetupWindowController.shared.show()
+    }
+
+    /// Update checkmark state and tooltip for "Launch at Login".
+    /// Called from refresh() so the state always reflects the actual SMAppService status.
+    private func updateLaunchAtLoginItem() {
+        let svc = SMAppService.mainApp
+        switch svc.status {
+        case .enabled:
+            launchAtLoginItem.state     = .on
+            launchAtLoginItem.isEnabled = true
+            launchAtLoginItem.toolTip   = nil
+        case .requiresApproval:
+            // ผู้ใช้ต้องอนุมัติใน System Settings → General → Login Items
+            launchAtLoginItem.state     = .mixed
+            launchAtLoginItem.isEnabled = true
+            launchAtLoginItem.toolTip   = "Waiting for approval in System Settings → General → Login Items"
+        case .notFound:
+            // app ไม่ได้อยู่ใน /Applications/ — SMAppService ต้องการ path นี้เพื่อ register
+            launchAtLoginItem.state     = .off
+            launchAtLoginItem.isEnabled = true
+            launchAtLoginItem.toolTip   = "Move TeamRecorderBar.app to /Applications/ to enable this"
+        default:
+            launchAtLoginItem.state     = .off
+            launchAtLoginItem.isEnabled = true
+            launchAtLoginItem.toolTip   = nil
+        }
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let svc = SMAppService.mainApp
+        do {
+            if svc.status == .enabled {
+                try svc.unregister()
+            } else {
+                try svc.register()
+            }
+        } catch {
+            // แสดง alert แทน log เพราะผู้ใช้ทีมไม่ได้เปิด Terminal
+            let alert = NSAlert()
+            alert.messageText = "Launch at Login"
+            alert.informativeText = svc.status == .notFound
+                ? "Move TeamRecorderBar.app to /Applications/ first, then try again."
+                : "Could not update Login Item:\n\(error.localizedDescription)"
+            alert.alertStyle = .warning
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+        updateLaunchAtLoginItem()
+    }
+
+    // MARK: — Double-click feedback
+
+    /// Brief icon dimming to confirm the app is already running when double-clicked.
+    func flashIcon() {
+        guard let button = statusItem.button else { return }
+        button.appearsDisabled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            button.appearsDisabled = false
+        }
+    }
+}
