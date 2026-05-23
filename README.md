@@ -185,6 +185,32 @@ UDP drops → รอ 8s ยืนยัน (ป้องกัน false stop)
 
 ---
 
+## Uninstall
+
+```bash
+cd team-recorder
+make uninstall
+```
+
+ลบ: app, preferences, runtime state (`status.json`, PID files)  
+**ไม่ลบ:** ไฟล์บันทึกใน `~/Documents/Teams Recording/`
+
+หลัง uninstall ให้ยกเลิกสิทธิ์ใน System Settings ด้วยตัวเอง (macOS ไม่อนุญาตให้ทำโดย API):
+
+| Permission | วิธียกเลิก |
+|------------|-----------|
+| Screen Recording | System Settings → Privacy & Security → Screen Recording → TeamRecorderBar → click **−** |
+| Microphone | System Settings → Privacy & Security → Microphone → TeamRecorderBar → toggle off |
+| Calendar | System Settings → Privacy & Security → Calendars → TeamRecorderBar → **None** |
+
+**ติดตั้งใหม่หลัง uninstall:**
+
+```bash
+make clean-reinstall   # uninstall + ติดตั้งใหม่ในขั้นตอนเดียว
+```
+
+---
+
 ## Troubleshooting
 
 | ปัญหา | วิธีแก้ |
