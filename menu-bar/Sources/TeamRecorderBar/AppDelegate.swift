@@ -93,8 +93,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if !path.isEmpty, FileManager.default.fileExists(atPath: path) {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
         } else {
-            // File missing or path unknown — open the recordings folder
-            NSWorkspace.shared.open(WatcherManager.shared.recordingDirectory())
+            // File missing or path unknown — open the recordings folder in Finder.
+            // selectFile always opens Finder; open() can route to wrong handler on iCloud paths.
+            let dir = WatcherManager.shared.recordingDirectory()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir.path)
         }
         completionHandler()
     }

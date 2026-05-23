@@ -19,6 +19,9 @@ class StatusBarController {
     private var lastRecordingItem:   NSMenuItem!
     private var launchAtLoginItem:   NSMenuItem!
     private var launchWarningItem:   NSMenuItem!   // hidden unless watcher failed to start
+    fileprivate var icalBuddyStatusItem: NSMenuItem!   // shows live icalBuddy probe state
+    fileprivate var icalBuddyProbeInFlight = false     // prevents stacking probes
+    private var permSubmenuDelegate: PermSubmenuDelegate! // kept alive for NSMenuDelegate
 
     // File watcher for status.json
     private var fileSource: DispatchSourceFileSystemObject?
@@ -145,6 +148,9 @@ class StatusBarController {
         // Permissions submenu
         let permItem = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
         let permSubmenu = NSMenu()
+        permSubmenuDelegate = PermSubmenuDelegate()
+        permSubmenuDelegate.controller = self
+        permSubmenu.delegate = permSubmenuDelegate
 
         let screenItem = NSMenuItem(
             title: "Screen Recording…",
@@ -172,14 +178,14 @@ class StatusBarController {
 
         permSubmenu.addItem(.separator())
 
-        let retryBuddyItem = NSMenuItem(
-            title: "Retry icalBuddy Access",
+        icalBuddyStatusItem = NSMenuItem(
+            title: icalBuddyMenuTitle(),
             action: #selector(retryIcalBuddyAccess),
             keyEquivalent: ""
         )
-        retryBuddyItem.target = self
-        retryBuddyItem.toolTip = "Re-run the icalBuddy probe. Useful after granting Calendar access in System Settings."
-        permSubmenu.addItem(retryBuddyItem)
+        icalBuddyStatusItem.target = self
+        icalBuddyStatusItem.toolTip = "Click to re-probe. Status updates each time you open this menu."
+        permSubmenu.addItem(icalBuddyStatusItem)
 
         permItem.submenu = permSubmenu
         menu.addItem(permItem)
@@ -479,8 +485,11 @@ class StatusBarController {
         // Probe is async (≤4s). Result shown in the completion alert below.
         PermissionChecker.primeIcalBuddyCalendar(
             projectDirectory: WatcherManager.shared.projectDirectory
-        ) { ok, detail in
+        ) { [weak self] ok, detail in
             DispatchQueue.main.async {
+                guard let self else { return }
+                UserDefaults.standard.set(ok, forKey: "icalBuddyVerified")
+                self.icalBuddyStatusItem.title = self.icalBuddyMenuTitle()
                 let result = NSAlert()
                 result.messageText = ok ? "icalBuddy Access Confirmed" : "icalBuddy Access Advisory"
                 result.informativeText = ok
@@ -655,6 +664,35 @@ class StatusBarController {
         button.appearsDisabled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             button.appearsDisabled = false
+        }
+    }
+
+    // MARK: — icalBuddy status helpers
+
+    fileprivate func icalBuddyMenuTitle() -> String {
+        let verified = UserDefaults.standard.bool(forKey: "icalBuddyVerified")
+        return verified ? "icalBuddy: Verified ✓" : "icalBuddy: No Access ⚠"
+    }
+}
+
+// MARK: — NSMenuDelegate helper (probe icalBuddy on Permissions submenu open)
+// StatusBarController doesn't inherit NSObject, so delegate is a thin helper.
+
+private class PermSubmenuDelegate: NSObject, NSMenuDelegate {
+    weak var controller: StatusBarController?
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard let c = controller, !c.icalBuddyProbeInFlight else { return }
+        c.icalBuddyProbeInFlight = true
+        PermissionChecker.primeIcalBuddyCalendar(
+            projectDirectory: WatcherManager.shared.projectDirectory
+        ) { [weak c] ok, _ in
+            DispatchQueue.main.async {
+                guard let c else { return }
+                c.icalBuddyProbeInFlight = false
+                UserDefaults.standard.set(ok, forKey: "icalBuddyVerified")
+                c.icalBuddyStatusItem.title = c.icalBuddyMenuTitle()
+            }
         }
     }
 }

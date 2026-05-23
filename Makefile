@@ -56,6 +56,7 @@ menu-bar-install: menu-bar
 	@echo "  ⏳  Installing TeamRecorderBar.app..."
 	@rm -rf /Applications/TeamRecorderBar.app
 	@cp -r "$(MENU_BAR_APP)" /Applications/
+	@touch /Applications/TeamRecorderBar.app
 	@/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
 	    -f /Applications/TeamRecorderBar.app 2>/dev/null || true
 	@echo "  ✓  Installed → /Applications/TeamRecorderBar.app"
