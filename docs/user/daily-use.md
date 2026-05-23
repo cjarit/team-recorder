@@ -7,7 +7,7 @@
 1. Open TeamRecorderBar from `/Applications/` (or use Launch at Login)
 2. Join your Teams meeting — recording starts automatically
 3. Leave the meeting — recording stops and is named after the calendar event
-4. Find your recordings at `~/Documents/Teams Recording/`
+4. Click the saved-recording notification to reveal the file in Finder, or find recordings at `~/Documents/Teams Recording/`
 
 ## Menu bar icons
 
@@ -21,6 +21,7 @@
 
 - **▶ Start Recording** — start immediately without waiting for Teams detection
 - **■ Stop Recording** — stop manually
+- **Recover Recorder…** — clear a stale recording state after a crash or stuck stop
 - **📁 Recordings Folder → Change Folder…** — move recordings to a different folder
 - **Launch at Login** — toggle auto-start when you log in (requires app in `/Applications/`)
 - **Setup Guide…** — re-run the permission setup if something is wrong

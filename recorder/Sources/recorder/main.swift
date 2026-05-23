@@ -239,8 +239,39 @@ final class RecorderEngine {
     private var sysSamples: Int64 = 0
     private var micSamples: Int64 = 0
 
-    // Signals that finishWriting() has completed
-    private let finishSema = DispatchSemaphore(value: 0)
+    private final class StopContext {
+        let sema = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var emitted = false
+        private var writer: AVAssetWriter?
+
+        func setWriter(_ writer: AVAssetWriter?) {
+            lock.lock()
+            self.writer = writer
+            lock.unlock()
+        }
+
+        func cancelWriter() {
+            lock.lock()
+            let w = writer
+            writer = nil
+            lock.unlock()
+            w?.cancelWriting()
+        }
+
+        func markEmitted() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !emitted else { return false }
+            emitted = true
+            writer = nil
+            return true
+        }
+    }
+
+    // Tracks the current stop only so timeout cleanup can find the writer.
+    private let finishLock = NSLock()
+    private var finishContext: StopContext?
 
     // MARK: – Start
 
@@ -315,10 +346,20 @@ final class RecorderEngine {
         stopMic()
         stopSCK()
         // Short grace so any in-flight buffers on writeQ can land
+        let context = StopContext()
+        finishLock.lock()
+        finishContext = context
+        finishLock.unlock()
         writeQ.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.finishWriter()
+            self?.finishWriter(context)
         }
-        finishSema.wait()   // block until finishWriting completes
+        if context.sema.wait(timeout: .now() + 10) == .timedOut {
+            context.cancelWriter()
+            writer = nil
+            sysTrack = nil
+            micTrack = nil
+            emitStopResponse("STOPPED_ERROR: finishWriting_timeout", context: context)
+        }
     }
 
     // MARK: – Mic (AVAudioEngine)
@@ -715,29 +756,42 @@ final class RecorderEngine {
 
     // MARK: – Finish
 
-    private func finishWriter() {
+    private func finishWriter(_ context: StopContext) {
         sysTrack?.markAsFinished()
         micTrack?.markAsFinished()
         sysTrack = nil
         micTrack = nil
         let w = writer
         writer = nil
+        context.setWriter(w)
         if let w {
             w.finishWriting { [weak self] in
                 // Emit outcome token so Python can distinguish success from disk/AVFoundation errors.
                 // Python renames as INCOMPLETE on STOPPED_ERROR instead of silently producing
                 // a well-named but damaged file.
                 if let err = w.error {
-                    emit("STOPPED_ERROR: \(err.localizedDescription)")
+                    self?.emitStopResponse("STOPPED_ERROR: \(err.localizedDescription)",
+                                           context: context)
                 } else {
-                    emit("STOPPED_OK")
+                    self?.emitStopResponse("STOPPED_OK", context: context)
                 }
-                self?.finishSema.signal()
             }
         } else {
-            emit("STOPPED_OK")
-            finishSema.signal()
+            emitStopResponse("STOPPED_OK", context: context)
         }
+    }
+
+    private func emitStopResponse(_ token: String, context: StopContext) {
+        guard context.markEmitted() else { return }
+
+        finishLock.lock()
+        if finishContext === context {
+            finishContext = nil
+        }
+        finishLock.unlock()
+
+        emit(token)
+        context.sema.signal()
     }
 }
 
@@ -849,7 +903,7 @@ private func dispatch(_ line: String) {
         }
     } else if cmd == "stop" {
         engine.stop()
-        // STOPPED_OK / STOPPED_ERROR emitted by finishWriter() via finishSema
+        // STOPPED_OK / STOPPED_ERROR emitted by the per-stop StopContext path
     } else if !cmd.isEmpty {
         fputs("ERROR: unknown command '\(cmd)'\n", stderr)
     }

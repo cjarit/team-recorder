@@ -35,10 +35,11 @@ build-recorder:
 
 menu-bar:
 	@echo "  ⏳  Building TeamRecorderBar... (ครั้งแรกอาจใช้เวลา ~1 นาที)"
-	cd menu-bar && swift build -c release
+	@echo "     กำลัง compile Swift app..."
+	@cd menu-bar && swift build -c release
 	@rm -rf "$(MENU_BAR_APP)"
 	@mkdir -p "$(MENU_BAR_APP)/Contents/MacOS" \
-	           "$(MENU_BAR_APP)/Contents/Resources"
+		           "$(MENU_BAR_APP)/Contents/Resources"
 	@cp menu-bar/.build/release/TeamRecorderBar \
 	       "$(MENU_BAR_APP)/Contents/MacOS/"
 	@cp menu-bar/Resources/Info.plist \
@@ -52,9 +53,11 @@ menu-bar:
 	@echo "  ✓  TeamRecorderBar.app ($$(uname -m)) → $(MENU_BAR_APP)"
 
 menu-bar-install: menu-bar
+	@echo "  ⏳  Installing TeamRecorderBar.app..."
 	@rm -rf /Applications/TeamRecorderBar.app
 	@cp -r "$(MENU_BAR_APP)" /Applications/
 	@echo "  ✓  Installed → /Applications/TeamRecorderBar.app"
+	@echo "  ⏳  Opening Team Recorder..."
 	@open /Applications/TeamRecorderBar.app
 	@echo ""
 	@echo "  ▶  แอปเปิดแล้ว — มองหา icon ที่ menu bar มุมขวาบนของจอ"

@@ -9,7 +9,7 @@
 
 ## Build & test
 
-- [ ] `make test` — 76 passed, 3 skipped (baseline)
+- [ ] `make test` — 78 passed, 3 skipped (baseline)
 - [ ] `make menu-bar` — clean build, zero warnings
 - [ ] `make doctor` — no errors on a clean machine
 - [ ] `make dist` — `dist/TeamRecorder.zip` created; LOCAL MACHINE ONLY warning shown
@@ -18,9 +18,11 @@
 
 - [ ] Screen Recording step: instructions box + "Open System Settings" + "Relaunch App" shown; no "Grant Access"
 - [ ] Mic step: "Grant Access" when undetermined; "Open System Settings" when denied; no relaunch button
-- [ ] Calendar step: same as mic step
-- [ ] Skip for Now: watcher starts, `setupCompleted` saved
-- [ ] Close button (×): watcher starts, `setupCompleted` saved
+- [ ] Calendar step: grants Team Recorder Calendar access and primes `icalBuddy` access before Finish
+- [ ] Skip for Now: disabled until required Screen Recording permission/relaunch path is complete
+- [ ] Close button (×): app remains idle if setup is incomplete
+- [ ] Recover Recorder… clears stale `recording` / stuck `stopping` state without restarting the app
+- [ ] Saved-recording notification opens Finder with the `.m4a` selected
 
 ## After release
 

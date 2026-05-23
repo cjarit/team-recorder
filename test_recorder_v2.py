@@ -73,6 +73,7 @@ def _redirect_runtime_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(v2, "APP_SUPPORT_DIR", support)
     monkeypatch.setattr(v2, "STATUS_FILE",     os.path.join(support, "status.json"))
     monkeypatch.setattr(v2, "PID_FILE",        os.path.join(support, "team-recorder.pid"))
+    monkeypatch.setattr(v2, "RECORDER_PID_FILE", os.path.join(support, "recorder.pid"))
 
 
 # ─── Binary / startup tests ───────────────────────────────────
@@ -368,6 +369,20 @@ def test_conflict_warning_logged_when_other_process_running(monkeypatch, capsys)
 
     captured = capsys.readouterr()
     assert "WARN" in captured.out
+
+
+def test_connect_recorder_writes_child_pid(monkeypatch, tmp_path):
+    fake_proc = MagicMock()
+    fake_proc.pid = 24680
+    monkeypatch.setattr(v2, "check_recorder_ready", lambda: True)
+    monkeypatch.setattr(v2.subprocess, "run", lambda *a, **kw: _completed(stdout=str(os.getpid()) + "\n"))
+    monkeypatch.setattr(v2.subprocess, "Popen", lambda *a, **kw: fake_proc)
+    pid_file = tmp_path / "recorder.pid"
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(v2, "RECORDER_PID_FILE", str(pid_file))
+
+    assert v2.connect_recorder() is fake_proc
+    assert pid_file.read_text().strip() == "24680"
 
 
 # ─── Rename logic tests ───────────────────────────────────────
@@ -812,6 +827,17 @@ def test_pid_file_write_and_remove(monkeypatch, tmp_path):
     v2.remove_pid_file()
     assert not pid_file.exists()
     v2.remove_pid_file()  # second call must not raise
+
+
+def test_recorder_pid_file_write_and_remove(monkeypatch, tmp_path):
+    pid_file = tmp_path / "recorder.pid"
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(v2, "RECORDER_PID_FILE", str(pid_file))
+    v2.write_recorder_pid_file(12345)
+    assert pid_file.read_text().strip() == "12345"
+    v2.remove_recorder_pid_file()
+    assert not pid_file.exists()
+    v2.remove_recorder_pid_file()
 
 
 # ─── Phase 1B: post-recording validation ──────────────────────

@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreGraphics
 import EventKit
+import Foundation
 
 /// Permission status for a single system resource.
 enum PermissionStatus { case granted, denied, undetermined }
@@ -89,5 +90,111 @@ struct PermissionChecker {
                 }
             }
         }
+    }
+
+    /// Trigger the icalBuddy Calendar permission during setup.
+    /// The Python watcher reads Calendar through icalBuddy, so the menu-bar app's
+    /// own EventKit grant is not enough to prevent a second prompt in a meeting.
+    static func primeIcalBuddyCalendar(projectDirectory: URL?,
+                                       completion: @escaping (Bool, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let binary = findIcalBuddy(projectDirectory: projectDirectory) else {
+                DispatchQueue.main.async {
+                    completion(false, "icalBuddy not found")
+                }
+                return
+            }
+
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: binary)
+            p.arguments = ["-f", "-nc", "-iep", "title,datetime", "-b", "||",
+                           "-tf", "%H:%M", "-nrd", "eventsToday"]
+            p.currentDirectoryURL = projectDirectory
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            p.standardOutput = stdout
+            p.standardError = stderr
+
+            do {
+                try p.run()
+            } catch {
+                DispatchQueue.main.async {
+                    completion(false, error.localizedDescription)
+                }
+                return
+            }
+
+            let deadline = Date().addingTimeInterval(8)
+            while p.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            if p.isRunning {
+                p.terminate()
+                DispatchQueue.main.async {
+                    completion(false, "icalBuddy timed out")
+                }
+                return
+            }
+
+            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(),
+                             encoding: .utf8) ?? ""
+            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(),
+                             encoding: .utf8) ?? ""
+            let combined = (out + "\n" + err).lowercased()
+            let denied = combined.contains("not authorized")
+                || combined.contains("permission")
+                || combined.contains("operation not permitted")
+                || combined.contains("no calendars")
+            DispatchQueue.main.async {
+                completion(!denied, denied ? (err.isEmpty ? out : err) : "icalBuddy calendar access ready")
+            }
+        }
+    }
+
+    private static func findIcalBuddy(projectDirectory: URL?) -> String? {
+        if let projectDirectory {
+            let envFile = projectDirectory.appendingPathComponent(".env")
+            if let content = try? String(contentsOf: envFile, encoding: .utf8) {
+                for raw in content.components(separatedBy: .newlines) {
+                    let line = raw.trimmingCharacters(in: .whitespaces)
+                    guard line.hasPrefix("ICAL_BUDDY_PATH=") else { continue }
+                    let value = String(line.dropFirst("ICAL_BUDDY_PATH=".count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !value.isEmpty {
+                        let expanded = NSString(string: value).expandingTildeInPath
+                        if FileManager.default.isExecutableFile(atPath: expanded) {
+                            return expanded
+                        }
+                    }
+                }
+            }
+        }
+
+        if let env = ProcessInfo.processInfo.environment["ICAL_BUDDY_PATH"], !env.isEmpty {
+            let expanded = NSString(string: env).expandingTildeInPath
+            if FileManager.default.isExecutableFile(atPath: expanded) {
+                return expanded
+            }
+        }
+
+        let which = Process()
+        which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        which.arguments = ["icalBuddy"]
+        let pipe = Pipe()
+        which.standardOutput = pipe
+        which.standardError = FileHandle.nullDevice
+        if (try? which.run()) != nil {
+            which.waitUntilExit()
+            let path = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                              encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let path, !path.isEmpty {
+                return path
+            }
+        }
+
+        let fallback = "/opt/homebrew/bin/icalBuddy"
+        return FileManager.default.isExecutableFile(atPath: fallback) ? fallback : nil
     }
 }

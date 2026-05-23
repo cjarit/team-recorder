@@ -5,9 +5,10 @@
 | Problem | Fix |
 |---------|-----|
 | Recording doesn't start | Check Screen Recording: System Settings → Privacy & Security → Screen Recording → Team Recorder ✓ → relaunch app |
-| File named "Teams Meeting" (not meeting title) | Calendar permission missing or Write Only — re-grant Full Access via Setup Guide… |
+| File named "Teams Meeting" (not meeting title) | Calendar permission missing for Team Recorder or `icalBuddy` — re-run Setup Guide… and allow Full Access |
 | No microphone audio | System Settings → Privacy & Security → Microphone → Team Recorder ✓ |
 | Recording continues after meeting ends | Expected — watcher waits 8s before confirming meeting ended (false-stop prevention) |
+| Red recording icon stays after Stop / app feels stuck | Click menu bar icon → Recover Recorder…; current file may be marked incomplete |
 
 ## Menu bar app issues
 
@@ -19,6 +20,7 @@
 | "Relaunch App" shows an error alert | Quit manually from the menu bar, then reopen `/Applications/TeamRecorderBar.app` |
 | Grey waveform but no recording | Run `make doctor` in the project folder — shows permission/disk/binary status |
 | Setup Guide appeared on an update/reinstall | Expected — clear saved state with `make reset-setup`, then reopen the app |
+| Calendar prompt appears twice during setup | Expected if the second prompt is for `icalBuddy`; allow it so live meetings do not prompt again |
 
 ## Uninstall & permissions
 

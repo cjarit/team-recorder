@@ -1,6 +1,6 @@
 # Teams Auto-Recorder
 
-บันทึกเสียง Microsoft Teams meeting อัตโนมัติ — ไม่ต้องใช้ OBS
+บันทึกเสียง Microsoft Teams meeting อัตโนมัติ
 
 เมื่อเข้า Teams call → เริ่มอัดเอง  
 เมื่อออกจาก call → หยุดอัด ตั้งชื่อไฟล์ตาม calendar อัตโนมัติ
@@ -24,8 +24,8 @@
 ```bash
 git clone https://github.com/cjarit/team-recorder
 cd team-recorder
-make setup              # ติดตั้ง dependencies (ครั้งแรก)
-make menu-bar-install   # build + copy ไปที่ /Applications/ + เปิดแอป
+make setup
+make menu-bar-install
 ```
 
 > แอปจะเปิดอัตโนมัติ — มองหา icon ที่ **menu bar มุมขวาบนของจอ** (ไม่มี Dock icon)
@@ -59,6 +59,7 @@ make menu-bar-install   # build + copy ไปที่ /Applications/ + เป�
 |--------|---------|
 | ▶ Start Recording | เริ่มบันทึกทันที (ไม่ต้องรอ Teams) |
 | ■ Stop Recording | หยุดบันทึก |
+| Recover Recorder… | เคลียร์สถานะค้างเมื่อ watcher/recorder crash |
 | Stop / Start Watcher | เปิด/ปิด watcher process |
 | 📁 Recordings Folder ▶ | ดู path ปัจจุบัน, Open Folder, **Change Folder…** |
 | Last: … | คลิกเพื่อเปิดไฟล์ล่าสุดใน Finder |
@@ -72,6 +73,9 @@ make menu-bar-install   # build + copy ไปที่ /Applications/ + เป�
 **Setup Guide** — เปิดขึ้นอัตโนมัติครั้งแรกที่รันแอป แนะนำการให้สิทธิ์ทีละขั้นตอน:
 Screen Recording → Microphone → Calendar
 เมื่อกด Finish แอปจะเริ่ม watcher ให้เลย
+
+Screen Recording ต้อง relaunch แอปหลังเปิดสิทธิ์ตามข้อกำหนดของ macOS.
+Calendar อาจมี prompt เพิ่มสำหรับ `icalBuddy` ระหว่าง Setup เพราะ watcher ใช้ helper นี้อ่าน Calendar ตอนตั้งชื่อไฟล์.
 
 **Launch at Login** — ต้องติดตั้งแอปไว้ที่ `/Applications/` ก่อน (ใช้ `make menu-bar-install`)
 ถ้ากดแล้วไม่ work จะมี alert แจ้ง
@@ -129,7 +133,8 @@ recorder/recorder --list-devices
 | `make dist` | สร้าง `dist/TeamRecorder.zip` — สำหรับเครื่อง developer เท่านั้น (ดู [packaging/README.md](packaging/README.md)) |
 
 **Log & status:** บันทึก log รายวันที่ `~/Library/Logs/Team Recorder/` และเขียน
-สถานะปัจจุบัน (`status.json`) ที่ `~/Library/Application Support/Team Recorder/`
+สถานะปัจจุบัน (`status.json`) รวมถึง PID watcher/recorder ที่
+`~/Library/Application Support/Team Recorder/`
 
 ### วิธีใช้ Terminal (ไม่ผ่าน menu bar)
 
@@ -184,7 +189,8 @@ UDP drops → รอ 8s ยืนยัน (ป้องกัน false stop)
 |-------|---------|
 | ไม่เริ่มอัด | เปิด Setup Guide… → Step 1 Screen Recording → ให้สิทธิ์แล้ว Relaunch App |
 | Setup Guide ไม่ขึ้น | คลิก menu bar icon → Setup Guide… หรือรัน `make reset-setup` แล้วเปิดแอปใหม่ |
-| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder ยังไม่ได้รับสิทธิ์ Calendar → System Settings → Privacy & Security → Calendars → **Full Access** |
+| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder หรือ `icalBuddy` ยังไม่ได้รับสิทธิ์ Calendar → เปิด Setup Guide… แล้วให้สิทธิ์ Calendar / Full Access |
+| icon แดงค้าง / Stop แล้วนิ่ง | คลิก menu bar icon → Recover Recorder… แล้วเริ่ม watcher ใหม่ |
 | `recorder binary เป็น arch ผิด` | รัน `make build-recorder` แล้ว commit `recorder/recorder` |
 | เสียงไม่มี mic | ตรวจสอบ `AUDIO_INPUT_DEVICE_UID` ใน `.env` หรือลองใช้ default |
 

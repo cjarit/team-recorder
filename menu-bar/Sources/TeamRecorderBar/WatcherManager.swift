@@ -9,6 +9,10 @@ class WatcherManager {
     /// Absolute path to teams_recorder_v2.py, read from watcher_path.txt in the app bundle.
     private(set) var watcherURL: URL?
 
+    var projectDirectory: URL? {
+        watcherURL?.deletingLastPathComponent()
+    }
+
     /// Process started by *this* app instance (nil if watcher was launched externally).
     private var managedProcess: Process?
 
@@ -33,6 +37,10 @@ class WatcherManager {
         if managedProcess?.isRunning == true { return true }
         if externalPidIsAlive() { return true }
         return pgrepWatcherPid() != nil
+    }
+
+    var isAppManagedWatcherRunning: Bool {
+        managedProcess?.isRunning == true
     }
 
     /// Fallback: run `pgrep -f teams_recorder_v2.py` and return the first matching PID.
@@ -74,6 +82,7 @@ class WatcherManager {
         p.arguments = ["python3", url.path]
         // Run from the project directory so relative .env lookup works
         p.currentDirectoryURL = url.deletingLastPathComponent()
+        p.environment = ProcessInfo.processInfo.environment.merging(["NOTIFY": "0"]) { $1 }
         // stdout/stderr → the existing daily log file the Python watcher manages itself
         p.standardOutput = FileHandle.nullDevice
         p.standardError  = FileHandle.nullDevice
@@ -102,8 +111,8 @@ class WatcherManager {
             return
         }
         // PID file first, then pgrep fallback
-        if let pid = externalPid(), kill(pid_t(pid), 0) == 0 {
-            kill(pid_t(pid), SIGTERM)
+        if let pid = verifiedExternalPid() {
+            kill(pid, SIGTERM)
             return
         }
         if let pid = pgrepWatcherPid() {
@@ -136,8 +145,8 @@ class WatcherManager {
         if let p = managedProcess, p.isRunning {
             return pid_t(p.processIdentifier)
         }
-        if let pid = externalPid(), kill(pid_t(pid), 0) == 0 {
-            return pid_t(pid)
+        if let pid = verifiedExternalPid() {
+            return pid
         }
         return pgrepWatcherPid()
     }
@@ -244,6 +253,14 @@ class WatcherManager {
         return support.appendingPathComponent("Team Recorder/team-recorder.pid")
     }
 
+    private static var recorderPidFileURL: URL {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+        return support.appendingPathComponent("Team Recorder/recorder.pid")
+    }
+
     private func externalPid() -> Int? {
         guard let content = try? String(contentsOf: WatcherManager.pidFileURL, encoding: .utf8) else {
             return nil
@@ -252,9 +269,112 @@ class WatcherManager {
     }
 
     private func externalPidIsAlive() -> Bool {
-        guard let pid = externalPid() else { return false }
-        // kill(pid, 0) returns 0 if the process exists
-        return kill(pid_t(pid), 0) == 0
+        verifiedExternalPid() != nil
+    }
+
+    private func verifiedExternalPid() -> pid_t? {
+        guard let pid = externalPid() else { return nil }
+        let p = pid_t(pid)
+        guard kill(p, 0) == 0 else {
+            removeStaleFile(WatcherManager.pidFileURL)
+            return nil
+        }
+        guard processCommand(pid: p).contains("teams_recorder_v2.py") else {
+            removeStaleFile(WatcherManager.pidFileURL)
+            return nil
+        }
+        return p
+    }
+
+    private func recorderPid() -> pid_t? {
+        guard let content = try? String(contentsOf: WatcherManager.recorderPidFileURL, encoding: .utf8),
+              let pid = Int(content.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        let p = pid_t(pid)
+        guard kill(p, 0) == 0 else {
+            removeStaleFile(WatcherManager.recorderPidFileURL)
+            return nil
+        }
+        let cmd = processCommand(pid: p)
+        guard cmd.contains("/recorder") || cmd.hasSuffix("recorder") else {
+            removeStaleFile(WatcherManager.recorderPidFileURL)
+            return nil
+        }
+        return p
+    }
+
+    func recoverStaleRecordingState() {
+        if let pid = recorderPid() {
+            kill(pid, SIGTERM)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                if kill(pid, 0) == 0 {
+                    kill(pid, SIGKILL)
+                }
+                NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+            }
+            // Python owns the watcher and will detect the recorder child exit,
+            // mark the active file incomplete, and reconnect the child if needed.
+            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+            return
+        }
+
+        if verifiedExternalPid() == nil {
+            clearStatusToIdle()
+            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+            return
+        }
+
+        // No recorder child is available for Python to observe. At this point the
+        // safest user-facing recovery is to stop the stuck watcher and clear stale UI.
+        if let watcher = verifiedExternalPid() { kill(watcher, SIGTERM) }
+        clearStatusToIdle()
+        NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+    }
+
+    private func clearStatusToIdle() {
+        let url = RecorderStatus.statusFileURL
+        let payload: [String: Any?] = [
+            "state": "idle",
+            "meetingName": nil,
+            "recordingPath": nil,
+            "startedAt": nil,
+            "lastError": "stale recording state cleared from menu bar app",
+            "lastRecordingPath": nil,
+            "lastRecordingName": nil,
+            "lastSavedAt": nil,
+            "lastStatus": nil,
+            "updatedAt": DateFormatter.teamRecorderStatus.string(from: Date()),
+        ]
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 },
+                                                   options: [.prettyPrinted])
+            try data.write(to: url, options: [.atomic])
+        } catch {
+            NSLog("[TeamRecorderBar] clearStatusToIdle failed: \(error)")
+        }
+    }
+
+    private func processCommand(pid: pid_t) -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return "" }
+        p.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func removeStaleFile(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
     }
 }
 

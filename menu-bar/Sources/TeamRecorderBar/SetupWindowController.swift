@@ -10,6 +10,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     private var currentStep = 0
     /// ป้องกัน recursion: windowWillClose → completeSetupAndStartWatcher → close → windowWillClose
     private var completingSetup = false
+    private var screenRecordingRequestedThisSession = false
+    private var icalBuddyPrimed = false
 
     // UI refs — set in buildUI(), safe to use after init
     private var stepLabel:        NSTextField!
@@ -90,14 +92,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: — NSWindowDelegate
 
-    /// Fallback for the red-close-button path — starts watcher so the app isn't stuck idle.
-    /// `completingSetup` guard prevents re-entry when we call close() ourselves.
+    /// Closing setup before required permissions are ready keeps the watcher idle.
     func windowWillClose(_ notification: Notification) {
         // คืน activation policy กลับเป็น .accessory (ซ่อนจาก Dock) ก่อนเสมอ
         NSApp.setActivationPolicy(.accessory)
-        if !UserDefaults.standard.bool(forKey: "setupCompleted") {
-            completeSetupAndStartWatcher(closeWindow: false)   // already closing
-        }
     }
 
     // MARK: — Public API
@@ -111,6 +109,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             return
         }
         currentStep = 0
+        icalBuddyPrimed = false
         win.center()
         refreshStep()
         // ชั่วคราว switch เป็น .regular เพื่อให้ window ขึ้น front ได้
@@ -125,6 +124,15 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     /// ทุก path ที่ออกจาก Setup ใช้ helper นี้เท่านั้น — ป้องกัน recursion และ duplicate watcher start
     private func completeSetupAndStartWatcher(closeWindow: Bool = true) {
         guard !completingSetup else { return }
+        guard PermissionChecker.screenRecording() == .granted else {
+            showSetupAlert(
+                title: "Screen Recording Required",
+                message: "Grant Screen Recording permission and relaunch Team Recorder before starting the watcher."
+            )
+            currentStep = 0
+            refreshStep()
+            return
+        }
         completingSetup = true
         UserDefaults.standard.set(true, forKey: "setupCompleted")
         WatcherManager.shared.autoStartIfNeeded()
@@ -280,11 +288,19 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
 
         // primaryButton — single action, title/target changes by step+state
-        if status == .granted {
-            primaryButton.isHidden = true
+        if currentStep == 2 && status == .granted && !icalBuddyPrimed {
+            primaryButton.isHidden = false
+            primaryButton.title = "Retry icalBuddy Access"
+        } else if status == .granted {
+            primaryButton.isHidden = currentStep != 0 || !screenRecordingRequestedThisSession
+            if currentStep == 0 && screenRecordingRequestedThisSession {
+                primaryButton.title = "Relaunch to Apply"
+            }
         } else {
             primaryButton.isHidden = false
-            if currentStep == 0 {
+            if currentStep == 0 && screenRecordingRequestedThisSession {
+                primaryButton.title = "Relaunch App"
+            } else if currentStep == 0 {
                 // Step 0: CTA that explains what happens — requestScreenRecording() + open Settings
                 primaryButton.title = "Add Team Recorder to Screen Recording"
             } else if info.grantsInApp && status == .undetermined {
@@ -298,7 +314,15 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
         // relaunchButton — step 0 only, hidden once granted
         if currentStep == 0 {
-            relaunchButton.isHidden = (status == .granted)
+            relaunchButton.isHidden = !screenRecordingRequestedThisSession
+            continueButton.isEnabled = status == .granted && !screenRecordingRequestedThisSession
+            skipButton.isEnabled = status == .granted && !screenRecordingRequestedThisSession
+            if screenRecordingRequestedThisSession {
+                statusText.stringValue = "Relaunch Team Recorder after enabling Screen Recording"
+            }
+        } else {
+            continueButton.isEnabled = true
+            skipButton.isEnabled = true
         }
     }
 
@@ -317,14 +341,22 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         let status = currentPermissionStatus()
 
         if currentStep == 0 {
+            if screenRecordingRequestedThisSession {
+                relaunchApp()
+                return
+            }
             // ต้อง call requestScreenRecording() ก่อน open Settings —
             // ถ้าไม่ call macOS จะไม่เพิ่ม app เข้า Screen Recording list เลย
+            screenRecordingRequestedThisSession = true
             PermissionChecker.requestScreenRecording()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.openSettings()
+                self?.refreshStatus()
             }
         } else if info.grantsInApp && status == .undetermined {
             grantAccess()
+        } else if currentStep == 2 && status == .granted && !icalBuddyPrimed {
+            primeIcalBuddyAndRefresh()
         } else {
             openSettings()
         }
@@ -338,7 +370,26 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             }
         default:
             PermissionChecker.requestCalendar { [weak self] _ in
-                self?.refreshStatus()
+                self?.primeIcalBuddyAndRefresh()
+            }
+        }
+    }
+
+    private func primeIcalBuddyAndRefresh() {
+        guard !icalBuddyPrimed else {
+            refreshStatus()
+            return
+        }
+        statusText.stringValue = "Checking icalBuddy calendar access…"
+        PermissionChecker.primeIcalBuddyCalendar(
+            projectDirectory: WatcherManager.shared.projectDirectory
+        ) { [weak self] ok, detail in
+            guard let self else { return }
+            self.icalBuddyPrimed = ok
+            self.refreshStatus()
+            if !ok {
+                self.statusText.stringValue = "Calendar granted, but icalBuddy needs access — click Retry icalBuddy Access"
+                NSLog("[TeamRecorderBar] icalBuddy calendar prime failed: \(detail)")
             }
         }
     }
@@ -377,10 +428,31 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func skipTapped() {
+        if currentStep == 0 && PermissionChecker.screenRecording() != .granted {
+            showSetupAlert(
+                title: "Screen Recording Required",
+                message: "Team Recorder cannot start until Screen Recording is granted and the app is relaunched."
+            )
+            return
+        }
         completeSetupAndStartWatcher(closeWindow: true)
     }
 
     @objc private func continueTapped() {
+        if currentStep == 0 && screenRecordingRequestedThisSession {
+            relaunchApp()
+            return
+        }
+        if currentStep == 0 && PermissionChecker.screenRecording() != .granted {
+            primaryTapped()
+            return
+        }
+        if currentStep == steps.count - 1
+            && PermissionChecker.calendar() == .granted
+            && !icalBuddyPrimed {
+            primeIcalBuddyAndRefresh()
+            return
+        }
         if currentStep < steps.count - 1 {
             currentStep += 1
             refreshStep()
@@ -405,6 +477,16 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         let b = NSButton(title: title, target: self, action: action)
         b.bezelStyle = .rounded
         return b
+    }
+
+    private func showSetupAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     private func hstack(_ views: [NSView], spacing: CGFloat) -> NSStackView {

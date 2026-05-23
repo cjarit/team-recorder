@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import UserNotifications
 
 /// Owns the NSStatusItem and all menu interactions.
 /// Refreshed on every status.json write (via DispatchSourceFileSystemObject)
@@ -12,6 +13,7 @@ class StatusBarController {
     private var startRecordingItem:  NSMenuItem!
     private var stopRecordingItem:   NSMenuItem!
     private var toggleItem:          NSMenuItem!
+    private var recoverItem:         NSMenuItem!
     private var folderPathItem:      NSMenuItem!   // shows current RECORDING_DIR (disabled)
     private var changeFolderItem:    NSMenuItem!
     private var lastRecordingItem:   NSMenuItem!
@@ -22,6 +24,7 @@ class StatusBarController {
     private var pollTimer:  Timer?
 
     private var currentStatus: RecorderStatus?
+    private var lastNotifiedRecordingPath: String?
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -80,6 +83,15 @@ class StatusBarController {
         )
         toggleItem.target = self
         menu.addItem(toggleItem)
+
+        recoverItem = NSMenuItem(
+            title: "Recover Recorder…",
+            action: #selector(recoverRecorder),
+            keyEquivalent: ""
+        )
+        recoverItem.target = self
+        recoverItem.isHidden = true
+        menu.addItem(recoverItem)
 
         // Recordings folder submenu
         let folderItem = NSMenuItem(title: "📁  Recordings Folder", action: nil, keyEquivalent: "")
@@ -197,6 +209,21 @@ class StatusBarController {
         }
     }
 
+    @objc private func recoverRecorder() {
+        let alert = NSAlert()
+        alert.messageText = "Recover Recorder?"
+        alert.informativeText = "This will stop any stuck recording process and clear stale menu-bar status. The current file may be incomplete."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Recover")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        WatcherManager.shared.recoverStaleRecordingState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.refresh()
+        }
+    }
+
     @objc private func openRecordingsFolder() {
         if let path = currentStatus?.lastRecordingPath {
             let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
@@ -289,6 +316,7 @@ class StatusBarController {
     }
 
     @objc func refresh() {
+        let previousStatus = currentStatus
         currentStatus = RecorderStatus.load()
         updateStatusLine()
         updateControlItems()
@@ -296,12 +324,17 @@ class StatusBarController {
         updateLastRecordingItem()
         updateLaunchAtLoginItem()
         updateIcon()
+        notifyIfRecordingSaved(previous: previousStatus, current: currentStatus)
     }
 
     // MARK: — Menu updates
 
     private func updateStatusLine() {
         let s = currentStatus
+        if isStaleRecordingState {
+            statusLine.title = "⚠ Status stale — recover recorder"
+            return
+        }
         guard let s else {
             statusLine.title = WatcherManager.shared.isRunning
                 ? "○ Watcher running — no status yet"
@@ -329,14 +362,17 @@ class StatusBarController {
     private func updateControlItems() {
         let state     = currentStatus?.state ?? "idle"
         let running   = WatcherManager.shared.isRunning
-        let recording = state == "recording"
-        let stopping  = state == "stopping"
+        let stale     = isStaleRecordingState
+        let recording = state == "recording" && !stale
+        let stopping  = state == "stopping" && !stale
 
         // ▶ Start Recording: enabled when watcher is up and not already recording/stopping
-        startRecordingItem.isEnabled = running && !recording && !stopping
+        startRecordingItem.isEnabled = running && !recording && !stopping && !stale
 
         // ■ Stop Recording: enabled only while recording
         stopRecordingItem.isEnabled = recording
+        recoverItem.isHidden = !stale && state != "error"
+        recoverItem.isEnabled = stale || state == "error"
 
         // Start/Stop Watcher toggle
         if WatcherManager.shared.watcherURL == nil {
@@ -354,7 +390,7 @@ class StatusBarController {
 
         // Disable "Change Folder…" while a recording is active or stopping
         let state = currentStatus?.state ?? "idle"
-        changeFolderItem.isEnabled = state != "recording" && state != "stopping"
+        changeFolderItem.isEnabled = (state != "recording" && state != "stopping") || isStaleRecordingState
     }
 
     private func updateLastRecordingItem() {
@@ -380,7 +416,7 @@ class StatusBarController {
     }
 
     private func updateIcon() {
-        let state = currentStatus?.state ?? "idle"
+        let state = isStaleRecordingState ? "error" : (currentStatus?.state ?? "idle")
         statusItem.button?.image   = icon(for: state)
         statusItem.button?.toolTip = tooltipText(for: state)
     }
@@ -415,6 +451,9 @@ class StatusBarController {
     }
 
     private func tooltipText(for state: String) -> String {
+        if isStaleRecordingState {
+            return "Team Recorder — stale status, click to recover"
+        }
         switch state {
         case "recording":
             let name = currentStatus?.meetingName ?? "Meeting"
@@ -435,6 +474,50 @@ class StatusBarController {
             return "~" + String(path.dropFirst(home.count))
         }
         return path
+    }
+
+    private var isStaleRecordingState: Bool {
+        guard let s = currentStatus else { return false }
+        if s.state == "recording" && !WatcherManager.shared.isRunning {
+            return true
+        }
+        if s.state == "stopping" {
+            guard let updated = s.updatedDate else { return true }
+            return Date().timeIntervalSince(updated) > 45
+        }
+        return false
+    }
+
+    private func notifyIfRecordingSaved(previous: RecorderStatus?, current: RecorderStatus?) {
+        guard let current,
+              current.state == "waiting",
+              let path = current.lastRecordingPath,
+              path != lastNotifiedRecordingPath,
+              WatcherManager.shared.isAppManagedWatcherRunning else {
+            return
+        }
+        if previous?.state == "recording" || previous?.state == "stopping" {
+            lastNotifiedRecordingPath = path
+            sendSavedNotification(path: path, name: current.lastRecordingName)
+        }
+    }
+
+    private func sendSavedNotification(path: String, name: String?) {
+        let content = UNMutableNotificationContent()
+        content.title = "Team Recorder"
+        content.body = "Saved: \(name ?? URL(fileURLWithPath: path).lastPathComponent)"
+        content.sound = .default
+        content.userInfo = ["filePath": path]
+        let request = UNNotificationRequest(
+            identifier: "team-recorder-saved-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog("[TeamRecorderBar] notification failed: \(error)")
+            }
+        }
     }
 
     // MARK: — Setup Guide & Launch at Login

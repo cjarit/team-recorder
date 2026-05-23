@@ -1,12 +1,14 @@
 import AppKit
+import UserNotifications
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusBarController: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Belt-and-suspenders: LSUIElement in Info.plist handles this,
         // but setting it here ensures it works even if the plist is absent during dev.
         NSApp.setActivationPolicy(.accessory)
+        configureNotifications()
 
         statusBarController = StatusBarController()
 
@@ -17,7 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Setup already done: auto-start the watcher as normal.
             // No-op if watcher is already running (e.g. started via `make run`).
-            WatcherManager.shared.autoStartIfNeeded()
+            autoStartOrShowSetup()
         }
     }
 
@@ -38,7 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Setup incomplete — show guide; do NOT auto-start (setup does it on finish)
             SetupWindowController.shared.show()
         } else {
-            WatcherManager.shared.autoStartIfNeeded()
+            autoStartOrShowSetup()
             // Show alert instead of flashIcon() — ผู้ใช้ใหม่มักไม่รู้ว่าแอปอยู่ที่ menu bar
             showAlreadyRunningAlert()
         }
@@ -61,5 +63,40 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if response == .alertSecondButtonReturn {
             SetupWindowController.shared.show()
         }
+    }
+
+    private func autoStartOrShowSetup() {
+        guard PermissionChecker.screenRecording() == .granted else {
+            UserDefaults.standard.set(false, forKey: "setupCompleted")
+            SetupWindowController.shared.show()
+            return
+        }
+        WatcherManager.shared.autoStartIfNeeded()
+    }
+
+    private func configureNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let path = response.notification.request.content.userInfo["filePath"] as? String {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: path) {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } else {
+                NSWorkspace.shared.open(url.deletingLastPathComponent())
+            }
+        }
+        completionHandler()
     }
 }

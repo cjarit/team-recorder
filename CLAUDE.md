@@ -22,7 +22,7 @@ macOS-only tool that watches for Microsoft Teams meetings and automatically reco
 ```
 Team Recorder/
 ├── teams_recorder_v2.py     Main runtime — do not refactor
-├── test_recorder_v2.py      Unit tests (76 pass, 3 skipped)
+├── test_recorder_v2.py      Unit tests (78 pass, 3 skipped)
 ├── recorder/
 │   ├── recorder             Compiled Swift binary — committed to repo
 │   ├── main.swift           Swift source (Sources/recorder/main.swift)
@@ -237,7 +237,7 @@ Inline Thai comments are team knowledge from real testing sessions. They explain
 ## Test Coverage
 
 ```
-test_recorder_v2.py — 76 passed, 3 skipped
+test_recorder_v2.py — 78 passed, 3 skipped
 ```
 
 The 3 skipped tests are `@LIVE_SMOKE` — require a real binary and Screen Recording permission. Run with `RUN_LIVE_SMOKE=1 make test`.
@@ -259,6 +259,8 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | Quitting TeamRecorderBar stops the watcher | Watcher was auto-started by the app (managed process) | Expected — `stopManagedOnly()` only terminates processes the app itself started; `make run` watchers are unaffected |
 | "Launch at Login" toggle fails | App is not in `/Applications/` | `make menu-bar-install` copies to `/Applications/` and then opens the app |
 | Setup window appears again after reinstall | `UserDefaults.setupCompleted` is cleared when the app is deleted | Expected — re-run setup to re-grant permissions, then it won't show again |
+| Calendar prompt appears for icalBuddy during setup | macOS grants Calendar per helper process | Expected — allow it during Setup so a live meeting does not trigger it later |
+| Red recording icon persists after watcher crash | `status.json` can outlive the watcher process | Use menu bar → Recover Recorder…; the app validates stale PID/status state |
 
 ---
 

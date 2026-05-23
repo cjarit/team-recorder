@@ -60,6 +60,7 @@ LOG_DIR         = os.path.expanduser("~/Library/Logs/Team Recorder")
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/Team Recorder")
 STATUS_FILE     = os.path.join(APP_SUPPORT_DIR, "status.json")
 PID_FILE        = os.path.join(APP_SUPPORT_DIR, "team-recorder.pid")
+RECORDER_PID_FILE = os.path.join(APP_SUPPORT_DIR, "recorder.pid")
 NOTIFY_ENABLED  = False  # main() ตั้งเป็น True — unit test ที่เรียกฟังก์ชันตรง ๆ จะเงียบ
 
 # ─── Signal flags (SIGUSR1 = manual start, SIGUSR2 = manual stop) ────────────
@@ -473,6 +474,43 @@ def remove_pid_file():
         pass
 
 
+def write_recorder_pid_file(pid: int):
+    """เขียน PID ของ Swift recorder child — ใช้สำหรับ recovery จาก menu bar app"""
+    try:
+        os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
+        with open(RECORDER_PID_FILE, "w") as f:
+            f.write(str(pid))
+    except Exception:
+        pass
+
+
+def remove_recorder_pid_file():
+    """ลบ recorder child PID file เมื่อ child จบหรือ watcher ออก"""
+    try:
+        os.remove(RECORDER_PID_FILE)
+    except OSError:
+        pass
+
+
+def _terminate_recorder_proc(proc: "subprocess.Popen | None", timeout: float = 3.0):
+    """Terminate a stuck recorder child without touching the watcher process."""
+    if not proc or proc.poll() is not None:
+        remove_recorder_pid_file()
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=timeout)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    remove_recorder_pid_file()
+
+
 def _process_command(pid: str) -> str:
     """คืน command line ของ PID ที่ระบุ — ว่างถ้าไม่มี process นั้น"""
     try:
@@ -562,12 +600,7 @@ _recorder_proc: "subprocess.Popen | None" = None
 def _cleanup_recorder():
     """ยุติ Swift binary เมื่อ Python process จบ (atexit / signal)"""
     global _recorder_proc
-    if _recorder_proc and _recorder_proc.poll() is None:
-        _recorder_proc.terminate()
-        try:
-            _recorder_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _recorder_proc.kill()
+    _terminate_recorder_proc(_recorder_proc, timeout=5)
 
 
 atexit.register(_cleanup_recorder)
@@ -613,6 +646,7 @@ def connect_recorder() -> "subprocess.Popen | None":
             bufsize=0,  # unbuffered — ต้องการ immediate response
         )
         _recorder_proc = proc
+        write_recorder_pid_file(proc.pid)
         log("✓  recorder binary started")
         return proc
     except Exception as e:
@@ -763,13 +797,29 @@ def stop_recording_v2(proc: "subprocess.Popen",
     elif response and response.startswith("STOPPED_ERROR"):
         reason = response[len("STOPPED_ERROR:"):].strip()
         log(f"[ERROR] finishWriting failed: {reason} — marking as INCOMPLETE")
-        _rename_as_incomplete(session)
+        incomplete_path = _rename_as_incomplete(session)
         notify("Team Recorder", "⚠️ บันทึกไม่สมบูรณ์ (INCOMPLETE)")
-        write_status("error", last_error=f"STOPPED_ERROR: {reason}")
+        write_status(
+            "error",
+            last_error=f"STOPPED_ERROR: {reason}",
+            last_recording_path=incomplete_path,
+            last_recording_name=os.path.basename(incomplete_path) if incomplete_path else None,
+            last_saved_at=datetime.now().isoformat(timespec="seconds") if incomplete_path else None,
+            last_status="incomplete" if incomplete_path else None,
+        )
     else:
         log(f"[ERROR] ไม่ได้รับ STOPPED_OK (ได้ {response!r}) — ข้าม rename (ไฟล์อาจไม่ครบ)")
+        incomplete_path = _rename_as_incomplete(session)
+        _terminate_recorder_proc(proc)
         notify("Team Recorder", "⚠️ หยุดบันทึกผิดพลาด — ไฟล์อาจไม่ครบ")
-        write_status("error", last_error=f"ไม่ได้รับ STOPPED_OK: {response!r}")
+        write_status(
+            "error",
+            last_error=f"ไม่ได้รับ STOPPED_OK: {response!r}",
+            last_recording_path=incomplete_path,
+            last_recording_name=os.path.basename(incomplete_path) if incomplete_path else None,
+            last_saved_at=datetime.now().isoformat(timespec="seconds") if incomplete_path else None,
+            last_status="incomplete" if incomplete_path else None,
+        )
 
 
 # ─── Subcommands: doctor / permissions / stop / index ────────
@@ -864,6 +914,25 @@ def run_doctor() -> int:
         _check("Calendar permission", "warn",
                "พิสูจน์ไม่ได้ — วันนี้ไม่มี event หรือยังไม่ได้ให้สิทธิ์ "
                "(ดู: make permissions)")
+
+    if os.path.exists(ICAL_BUDDY):
+        try:
+            r = subprocess.run(
+                [ICAL_BUDDY, "-f", "-nc", "-iep", "title,datetime",
+                 "-b", "||", "-tf", "%H:%M", "-nrd", "eventsToday"],
+                capture_output=True, text=True, timeout=10
+            )
+            combined = (r.stdout + "\n" + r.stderr).lower()
+            if "no calendars" in combined or "not authorized" in combined:
+                _check("icalBuddy Calendar access", "warn",
+                       "ยังอ่าน Calendar ไม่ได้ — ให้สิทธิ์ตอน Setup Guide")
+            else:
+                _check("icalBuddy Calendar access", "ok",
+                       "เรียก icalBuddy ได้ (วันนี้อาจไม่มี event)")
+        except subprocess.TimeoutExpired:
+            _check("icalBuddy Calendar access", "warn", "timeout")
+        except Exception as e:
+            _check("icalBuddy Calendar access", "warn", str(e))
 
     # สิ่งที่ตรวจแบบ read-only ไม่ได้ — ซื่อสัตย์ว่ายืนยันไม่ได้
     _check("Screen Recording permission", "skip",
@@ -1251,6 +1320,7 @@ def main():
         while True:
             # ตรวจ binary ยังอยู่ไหม — ถ้าตายให้ respawn แทนที่จะหยุดทั้งหมด
             if proc.poll() is not None:
+                remove_recorder_pid_file()
                 crash_restart_count += 1
                 log(f"[ERROR] recorder binary จบกะทันหัน "
                     f"(ครั้งที่ {crash_restart_count}/{MAX_CRASH_RESTARTS})")

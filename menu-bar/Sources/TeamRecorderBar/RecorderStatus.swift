@@ -16,6 +16,11 @@ struct RecorderStatus: Codable {
     var lastStatus: String?
     var updatedAt: String?
 
+    var updatedDate: Date? {
+        guard let updatedAt else { return nil }
+        return DateFormatter.teamRecorderStatus.date(from: updatedAt)
+    }
+
     // MARK: — File location (must match APP_SUPPORT_DIR in teams_recorder_v2.py)
 
     static var statusFileURL: URL {
@@ -31,4 +36,13 @@ struct RecorderStatus: Codable {
         guard let data = try? Data(contentsOf: statusFileURL) else { return nil }
         return try? JSONDecoder().decode(RecorderStatus.self, from: data)
     }
+}
+
+extension DateFormatter {
+    static let teamRecorderStatus: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return f
+    }()
 }

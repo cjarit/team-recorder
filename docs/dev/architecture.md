@@ -9,7 +9,8 @@
 | Python watcher | `teams_recorder_v2.py` | Polls UDP connections; controls recorder via stdin/stdout |
 | Swift binary | `recorder/recorder` | Captures system audio + mic via ScreenCaptureKit + AVAudioEngine |
 | Menu bar app | `menu-bar/` | UI wrapper; reads `status.json` via FSEvent + 5s poll; launches watcher |
-| Status contract | `status.json` | Written atomically by Python (`os.replace`); read by Swift app — the only IPC surface between Python and Swift UI |
+| Status contract | `status.json` | Written atomically by Python (`os.replace`); read by Swift app — primary IPC surface between Python and Swift UI |
+| PID files | `team-recorder.pid`, `recorder.pid` | Recovery hints for watcher and recorder child processes; validated by command before use |
 
 ## Data flow
 
@@ -31,6 +32,7 @@ Teams meeting detected (UDP ≥ 4)
 - **watcher_path.txt** — absolute path to `teams_recorder_v2.py` embedded at build time by `make menu-bar`; rebuild if repo moves
 - **SCK sleep/wake recovery** — `handleSCKStreamStop` restarts the ScreenCaptureKit stream in-place after display reconnect or sleep/wake; no recording gap
 - **`status.json` as app contract** — menu bar app never parses logs; reads only `status.json`; atomic writes via `os.replace` prevent partial reads
+- **Menu-bar notification owner** — app-managed watcher launches disable Python notifications; the app sends saved-file notifications with a Finder reveal action
 
 ## Full reference
 
