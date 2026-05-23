@@ -331,7 +331,7 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         } else {
             primaryButton.isHidden = false
             if currentStep == 0 && screenRecordingRequestedThisSession {
-                primaryButton.title = "Relaunch App"
+                primaryButton.isHidden = true  // relaunchButton is the dedicated relaunch CTA
             } else if currentStep == 0 {
                 // Step 0: CTA that explains what happens — requestScreenRecording() + open Settings
                 primaryButton.title = "Add Team Recorder to Screen Recording"
@@ -344,12 +344,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             }
         }
 
-        // relaunchButton — step 0 only, hidden once granted
+        // relaunchButton — step 0 only; always visible when not granted so users who
+        // manually enabled Screen Recording in System Settings can proceed without having
+        // to click "Add Team Recorder to Screen Recording" first.
         if currentStep == 0 {
-            relaunchButton.isHidden = !screenRecordingRequestedThisSession
+            relaunchButton.isHidden = (status == .granted)
             continueButton.isEnabled = status == .granted && !screenRecordingRequestedThisSession
             skipButton.isEnabled = status == .granted && !screenRecordingRequestedThisSession
-            if screenRecordingRequestedThisSession {
+            if status != .granted {
                 statusText.stringValue = "Relaunch Team Recorder after enabling Screen Recording"
             }
         } else {
