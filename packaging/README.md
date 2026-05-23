@@ -13,8 +13,8 @@ absolute path to `teams_recorder_v2.py` on the build machine (written into
 Teammates must clone the repo and build locally:
 
 ```bash
-git clone <repo-url>
-cd "Team Recorder"
+git clone https://github.com/cjarit/team-recorder
+cd team-recorder
 make setup              # install dependencies
 make menu-bar-install   # build + copy to /Applications/ + launch
 ```

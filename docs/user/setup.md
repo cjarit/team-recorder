@@ -9,9 +9,11 @@
 
 ## Installation
 
-### Option A: Developer install (full control)
+### Installation
 
 ```bash
+git clone https://github.com/cjarit/team-recorder
+cd team-recorder
 make setup              # install dependencies + create .env
 make menu-bar-install   # build + copy to /Applications/ + launch
 ```

@@ -22,8 +22,8 @@
 > ดู [packaging/README.md](packaging/README.md) สำหรับ roadmap และเหตุผล
 
 ```bash
-git clone <repo-url>
-cd "Team Recorder"
+git clone https://github.com/cjarit/team-recorder
+cd team-recorder
 make setup              # ติดตั้ง dependencies (ครั้งแรก)
 make menu-bar-install   # build + copy ไปที่ /Applications/ + เปิดแอป
 ```
