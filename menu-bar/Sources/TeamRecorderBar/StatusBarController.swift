@@ -446,6 +446,8 @@ class StatusBarController {
     }
 
     private func updateLaunchWarning() {
+        // Auto-clear stale launch error if a watcher is now running (e.g. started via `make run`)
+        WatcherManager.shared.clearLaunchErrorIfRunning()
         let hasError = WatcherManager.shared.lastLaunchError != nil
         launchWarningItem.isHidden = !hasError
     }
@@ -474,11 +476,7 @@ class StatusBarController {
 
     @objc private func retryIcalBuddyAccess() {
         NSApp.activate(ignoringOtherApps: true)
-        let checking = NSAlert()
-        checking.messageText = "Checking icalBuddy…"
-        checking.informativeText = "Running icalBuddy probe — this may take a few seconds."
-        checking.alertStyle = .informational
-        // Non-blocking: the actual probe runs async; show result in a separate alert
+        // Probe is async (≤4s). Result shown in the completion alert below.
         PermissionChecker.primeIcalBuddyCalendar(
             projectDirectory: WatcherManager.shared.projectDirectory
         ) { ok, detail in

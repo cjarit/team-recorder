@@ -99,66 +99,75 @@ struct PermissionChecker {
                                        completion: @escaping (Bool, String) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             guard let binary = findIcalBuddy(projectDirectory: projectDirectory) else {
-                DispatchQueue.main.async {
-                    completion(false, "icalBuddy not found")
+                DispatchQueue.main.async { completion(false, "icalBuddy not found") }
+                return
+            }
+            // One retry: if the first attempt fails with an ambiguous (non-permission) error,
+            // wait briefly and try once more — handles transient TCC daemon delays.
+            runIcalBuddyProbe(binary: binary, projectDirectory: projectDirectory) { ok, detail, explicitlyDenied in
+                if ok || explicitlyDenied {
+                    DispatchQueue.main.async { completion(ok, detail) }
+                    return
                 }
-                return
-            }
-
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: binary)
-            p.arguments = ["-f", "-nc", "-iep", "title,datetime", "-b", "||",
-                           "-tf", "%H:%M", "-nrd", "eventsToday"]
-            p.currentDirectoryURL = projectDirectory
-
-            let stdout = Pipe()
-            let stderr = Pipe()
-            p.standardOutput = stdout
-            p.standardError = stderr
-
-            do {
-                try p.run()
-            } catch {
-                DispatchQueue.main.async {
-                    completion(false, error.localizedDescription)
+                // Ambiguous result — retry once after a short pause
+                Thread.sleep(forTimeInterval: 0.5)
+                runIcalBuddyProbe(binary: binary, projectDirectory: projectDirectory) { ok2, detail2, _ in
+                    DispatchQueue.main.async { completion(ok2, detail2) }
                 }
-                return
-            }
-
-            let deadline = Date().addingTimeInterval(4)
-            while p.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            if p.isRunning {
-                p.terminate()
-                DispatchQueue.main.async {
-                    completion(false, "icalBuddy timed out")
-                }
-                return
-            }
-
-            let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
-            let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(),
-                             encoding: .utf8) ?? ""
-
-            // Trust exit code as the primary signal.
-            // exit 0  → access granted (even "no events today" is a valid success).
-            // non-zero + permission keywords → explicitly denied.
-            // non-zero + no keywords → unknown; treat as warning, not hard denial.
-            if p.terminationStatus == 0 {
-                DispatchQueue.main.async { completion(true, "icalBuddy calendar access ready") }
-                return
-            }
-            let combined = (out + "\n" + err).lowercased()
-            let explicitlyDenied = combined.contains("not authorized")
-                || combined.contains("operation not permitted")
-                || combined.contains("no calendars")
-            let detail = err.isEmpty ? out : err
-            DispatchQueue.main.async {
-                completion(false, explicitlyDenied ? detail : "icalBuddy returned non-zero (\(p.terminationStatus)): \(detail)")
             }
         }
+    }
+
+    private static func runIcalBuddyProbe(binary: String,
+                                          projectDirectory: URL?,
+                                          completion: (Bool, String, Bool) -> Void) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: binary)
+        p.arguments = ["-f", "-nc", "-iep", "title,datetime", "-b", "||",
+                       "-tf", "%H:%M", "-nrd", "eventsToday"]
+        p.currentDirectoryURL = projectDirectory
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        p.standardOutput = stdout
+        p.standardError = stderr
+
+        do {
+            try p.run()
+        } catch {
+            completion(false, error.localizedDescription, false)
+            return
+        }
+
+        let deadline = Date().addingTimeInterval(4)
+        while p.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        if p.isRunning {
+            p.terminate()
+            completion(false, "icalBuddy timed out", false)
+            return
+        }
+
+        let out = String(data: stdout.fileHandleForReading.readDataToEndOfFile(),
+                         encoding: .utf8) ?? ""
+        let err = String(data: stderr.fileHandleForReading.readDataToEndOfFile(),
+                         encoding: .utf8) ?? ""
+
+        // Trust exit code as the primary signal.
+        // exit 0  → granted (even "no events today" is valid).
+        // non-zero + permission keywords → explicitly denied.
+        // non-zero, no keywords → ambiguous; caller decides whether to retry.
+        if p.terminationStatus == 0 {
+            completion(true, "icalBuddy calendar access ready", false)
+            return
+        }
+        let combined = (out + "\n" + err).lowercased()
+        let explicitlyDenied = combined.contains("not authorized")
+            || combined.contains("operation not permitted")
+            || combined.contains("no calendars")
+        let detail = err.isEmpty ? out : err
+        completion(false, explicitlyDenied ? detail : "icalBuddy returned non-zero (\(p.terminationStatus)): \(detail)", explicitlyDenied)
     }
 
     private static func findIcalBuddy(projectDirectory: URL?) -> String? {

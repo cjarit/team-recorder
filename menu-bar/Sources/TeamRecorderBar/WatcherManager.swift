@@ -208,6 +208,13 @@ class WatcherManager {
         start()
     }
 
+    /// Clear a stale launch error when an external watcher (e.g. `make run`) is confirmed running.
+    /// Called by StatusBarController.updateLaunchWarning() so the ⚠ icon auto-clears.
+    func clearLaunchErrorIfRunning() {
+        guard lastLaunchError != nil, isRunning else { return }
+        lastLaunchError = nil
+    }
+
     // MARK: — Manual recording controls (SIGUSR1 / SIGUSR2)
 
     /// PID of the running watcher — managed process → PID file → pgrep fallback.
