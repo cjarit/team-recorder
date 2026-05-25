@@ -29,7 +29,7 @@ Teams meeting detected (UDP ≥ 4)
 - **STOPPED_OK is the sync point** — Python only renames after confirming flush; never rename on timeout
 - **icalBuddy for calendar** — JXA hangs when Calendar.app is closed (confirmed production bug; do not revert)
 - **ScreenCaptureKit** — system audio without virtual drivers; requires app relaunch after granting permission
-- **watcher_path.txt** — absolute path to `teams_recorder_v2.py` embedded at build time by `make menu-bar`; rebuild if repo moves
+- **watcher_path.txt + python_path.txt** — absolute paths to `teams_recorder_v2.py` and the Homebrew Python interpreter, embedded at build time by `make menu-bar`; both are machine-specific so rebuild if the repo moves or Homebrew Python changes. Pinning the interpreter prevents Launch Services from resolving `env python3` to system Python 3.9 (which lacks `python-dotenv`)
 - **SCK sleep/wake recovery** — `handleSCKStreamStop` restarts the ScreenCaptureKit stream in-place after display reconnect or sleep/wake; no recording gap
 - **`status.json` as app contract** — menu bar app never parses logs; reads only `status.json`; atomic writes via `os.replace` prevent partial reads
 - **Menu-bar notification owner** — app-managed watcher launches disable Python notifications; the app sends saved-file notifications with a Finder reveal action

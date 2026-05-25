@@ -6,6 +6,7 @@ enum LaunchError {
     case missingWatcherPathFile
     case watcherScriptNotFound(URL)
     case pythonNotFound
+    case pinnedPythonNotFound(URL)
     case earlyExit(code: Int32, stderr: String)
     case launchFailed(String)
 
@@ -17,6 +18,8 @@ enum LaunchError {
             return "teams_recorder_v2.py not found at:\n\(url.path)\n\nRun `make menu-bar-install` from the correct project folder."
         case .pythonNotFound:
             return "python3 not found. Install Python 3 via Homebrew:\n  brew install python"
+        case .pinnedPythonNotFound(let url):
+            return "Python pinned at:\n\(url.path)\nis missing or not executable.\nRun `make menu-bar-install` from the project folder."
         case .earlyExit(let code, let stderr):
             let detail = stderr.isEmpty ? "(no output)" : stderr.prefix(400).description
             return "Watcher crashed immediately (exit \(code)):\n\(detail)"
@@ -33,6 +36,10 @@ class WatcherManager {
 
     /// Absolute path to teams_recorder_v2.py, read from watcher_path.txt in the app bundle.
     private(set) var watcherURL: URL?
+
+    /// Absolute path to the Python interpreter setup.sh installed deps into.
+    /// Read from python_path.txt in the app bundle. nil → fall back to /usr/bin/env python3.
+    private(set) var pythonURL: URL?
 
     var projectDirectory: URL? {
         watcherURL?.deletingLastPathComponent()
@@ -52,6 +59,15 @@ class WatcherManager {
             let path = content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !path.isEmpty {
                 watcherURL = URL(fileURLWithPath: path)
+            }
+        }
+        // python_path.txt pins the interpreter setup.sh installed python-dotenv into,
+        // because Launch Services' PATH resolves `env python3` to system Python 3.9 (no dotenv).
+        if let url = Bundle.main.url(forResource: "python_path", withExtension: "txt"),
+           let content = try? String(contentsOf: url, encoding: .utf8) {
+            let path = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !path.isEmpty {
+                pythonURL = URL(fileURLWithPath: path)
             }
         }
     }
@@ -112,23 +128,34 @@ class WatcherManager {
         }
         guard !isRunning else { return }
 
-        // Preflight: confirm python3 is available before constructing the Process
-        let which = Process()
-        which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        which.arguments = ["python3"]
-        which.standardOutput = FileHandle.nullDevice
-        which.standardError  = FileHandle.nullDevice
-        if (try? which.run()) != nil { which.waitUntilExit() }
-        if which.terminationStatus != 0 {
-            NSLog("[TeamRecorderBar] python3 not found — watcher cannot start")
-            lastLaunchError = .pythonNotFound
-            NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
-            return
-        }
-
+        // Preflight: prefer the pinned interpreter (python_path.txt) so we use the same
+        // Python that setup.sh installed python-dotenv into. Fall back to env python3.
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        p.arguments = ["python3", url.path]
+        if let py = pythonURL {
+            guard FileManager.default.isExecutableFile(atPath: py.path) else {
+                NSLog("[TeamRecorderBar] pinned python not executable at \(py.path)")
+                lastLaunchError = .pinnedPythonNotFound(py)
+                NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+                return
+            }
+            p.executableURL = py
+            p.arguments = [url.path]
+        } else {
+            let which = Process()
+            which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+            which.arguments = ["python3"]
+            which.standardOutput = FileHandle.nullDevice
+            which.standardError  = FileHandle.nullDevice
+            if (try? which.run()) != nil { which.waitUntilExit() }
+            if which.terminationStatus != 0 {
+                NSLog("[TeamRecorderBar] python3 not found — watcher cannot start")
+                lastLaunchError = .pythonNotFound
+                NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
+                return
+            }
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = ["python3", url.path]
+        }
         // Run from the project directory so relative .env lookup works
         p.currentDirectoryURL = url.deletingLastPathComponent()
         p.environment = ProcessInfo.processInfo.environment.merging(["NOTIFY": "0"]) { $1 }

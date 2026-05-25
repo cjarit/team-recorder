@@ -154,13 +154,13 @@ After rebuilding, commit `recorder/recorder`. The binary is ~1 MB and arch-speci
 
 Key files:
 - `StatusBarController` — owns `NSStatusItem`; watches `status.json` via `DispatchSourceFileSystemObject` + 5s poll fallback. Atomic writes (Python's `os.replace`) trigger a `.rename` event — the handler re-attaches the source after a 0.2s settle delay. Contains "Launch at Login" (`SMAppService`) and "Setup Guide…" menu items.
-- `WatcherManager` — reads `watcher_path.txt` from bundle Resources (written by `make menu-bar` with the absolute path to `teams_recorder_v2.py`). Falls back to the PID file to detect externally-launched watchers.
+- `WatcherManager` — reads `watcher_path.txt` (script path) and `python_path.txt` (pinned interpreter) from bundle Resources (both written by `make menu-bar`). Launches the watcher with the pinned interpreter so dependencies installed by `setup.sh` are guaranteed visible; falls back to `/usr/bin/env python3` only if `python_path.txt` is absent. Falls back to the PID file to detect externally-launched watchers.
 - `RecorderStatus` — `Codable` struct mirroring the exact schema from `write_status()`.
 - `PermissionChecker` — static helpers using `CGPreflightScreenCaptureAccess()`, `AVCaptureDevice.authorizationStatus`, and `EKEventStore.authorizationStatus`. All request functions call back on the main thread.
 - `SetupWindowController` — singleton `NSWindowController`; shown on first launch (`setupCompleted` key absent from `UserDefaults`). Three steps: Screen Recording → Microphone → Calendar. Starts watcher on completion.
 - `AppDelegate` — gates `autoStartIfNeeded()` on `UserDefaults.setupCompleted`; shows setup window on first launch and on re-open if setup is incomplete.
 
-**`watcher_path.txt`** is embedded in the `.app` bundle at build time (by the Makefile using `$(pwd)`). If you move the repo, run `make menu-bar` again. The `.app` bundle is **not** committed — build it locally with `make menu-bar`.
+**`watcher_path.txt` and `python_path.txt`** are embedded in the `.app` bundle at build time (by the Makefile, using `$(pwd)` and the resolved Homebrew Python respectively). Both are machine-specific — if you move the repo, change Homebrew's Python version, or copy the `.app` to another machine, run `make menu-bar` again. The `.app` bundle is **not** committed — build it locally with `make menu-bar`.
 
 ### `recorder/Sources/recorder/main.swift` — Swift source
 
@@ -262,6 +262,7 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | Calendar prompt appears for icalBuddy during setup | macOS grants Calendar per helper process | Expected — allow it during Setup so a live meeting does not trigger it later |
 | Red recording icon persists after watcher crash | `status.json` can outlive the watcher process | Use menu bar → Recover Recorder…; the app validates stale PID/status state |
 | ⚠ menu icon after install from GitHub or different folder | `watcher_path.txt` bakes an absolute path at build time — mismatches break silently | `make menu-bar-install` from the current repo folder; or `make clean-reinstall` for a full reset |
+| `ModuleNotFoundError: No module named 'dotenv'` on app launch (but `make run` works) | Launch Services strips Homebrew from PATH; `env python3` resolved to system Python 3.9 which lacks dotenv | `python_path.txt` now pins the Homebrew interpreter at build time — `make menu-bar-install` to refresh |
 | Setup Step 3 Calendar — Finish stuck (legacy installs) | Old `icalBuddyPrimed` bool gated Finish if probe failed | Fixed: probe is now advisory only; Finish advances whenever Calendar system permission is granted |
 | icalBuddy probe result in menu differs from Python | Path resolution order mismatch between Swift and Python | Fixed: Swift now checks process env → `.env` → `which` → homebrew (same order as Python `load_dotenv`) |
 

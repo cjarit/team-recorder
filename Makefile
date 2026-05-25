@@ -49,6 +49,17 @@ menu-bar: icon
 	@# Embed absolute watcher path so the app can find it after `make menu-bar-install`
 	@echo "$$(pwd)/teams_recorder_v2.py" \
 	       > "$(MENU_BAR_APP)/Contents/Resources/watcher_path.txt"
+	@# Pin the Python interpreter setup.sh installed deps into. Launch Services strips
+	@# /opt/homebrew/bin from PATH, so `env python3` resolves to system Python 3.9
+	@# (no python-dotenv). Use absolute brew paths — make subshell PATH is not reliable.
+	@BREW=""; \
+	  [ -x /opt/homebrew/bin/brew ] && BREW=/opt/homebrew/bin/brew; \
+	  [ -z "$$BREW" ] && [ -x /usr/local/bin/brew ] && BREW=/usr/local/bin/brew; \
+	  PY=""; \
+	  [ -n "$$BREW" ] && PY="$$($$BREW --prefix python 2>/dev/null)/bin/python3"; \
+	  [ -x "$$PY" ] || PY="$$(command -v python3)"; \
+	  echo "$$PY" > "$(MENU_BAR_APP)/Contents/Resources/python_path.txt"; \
+	  echo "  ✓  pinned python: $$PY"
 	@codesign -s - --force "$(MENU_BAR_APP)"
 	@echo "  ✓  TeamRecorderBar.app ($$(uname -m)) → $(MENU_BAR_APP)"
 

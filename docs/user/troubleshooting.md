@@ -33,7 +33,9 @@ This means the app found a problem before it could launch `teams_recorder_v2.py`
 | `watcher_path.txt not found` | App bundle was not built from the current project folder | Run `make menu-bar-install` from the repo folder |
 | `teams_recorder_v2.py not found at …` | Repo was moved, or the app was built on a different machine | Run `make menu-bar-install` from the current repo location |
 | `python3 not found` | Python 3 is not on PATH | `brew install python` then reopen the app |
-| `Watcher crashed immediately (exit …)` | Python import failed (missing `python-dotenv`, syntax error, etc.) | Run `make setup` to reinstall dependencies, then reopen the app |
+| `Python pinned at … is missing or not executable` | The Python interpreter baked into the app at build time has moved or been removed | Run `make menu-bar-install` from the project folder to re-pin the current interpreter |
+| `Watcher crashed immediately (exit …)` with `ModuleNotFoundError` | App was built before the interpreter-pin fix, or `python-dotenv` is not installed in the pinned interpreter | First run `make menu-bar-install` to re-pin the interpreter. If the error persists, run `make setup` then `make menu-bar-install` again. |
+| `Watcher crashed immediately (exit …)` (other) | Python syntax error or other import failure | Run `make doctor` in the project folder; if it passes, re-run `make menu-bar-install` |
 
 After fixing the root cause, use **Start Watcher** in the menu or reopen the app.
 

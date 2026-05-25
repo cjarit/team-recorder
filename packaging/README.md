@@ -4,9 +4,14 @@
 
 `make dist` creates `dist/TeamRecorder.zip` for the **developer's own machine only**.
 
-The zip contains `TeamRecorderBar.app` which is **not portable** — it embeds an
-absolute path to `teams_recorder_v2.py` on the build machine (written into
-`TeamRecorderBar.app/Contents/Resources/watcher_path.txt` by `make menu-bar`).
+The zip contains `TeamRecorderBar.app` which is **not portable** — `make menu-bar`
+embeds two absolute paths from the build machine into `TeamRecorderBar.app/Contents/Resources/`:
+
+- `watcher_path.txt` — absolute path to `teams_recorder_v2.py`
+- `python_path.txt` — absolute path to the Homebrew Python interpreter that has the runtime deps (`python-dotenv`)
+
+Both paths must exist on the target machine, so the bundle works only on the build machine
+unless Phase 3E (below) bundles the runtime and pins a portable interpreter.
 
 ## How to share with teammates right now
 
