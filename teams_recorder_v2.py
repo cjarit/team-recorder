@@ -52,7 +52,7 @@ if os.getenv("OBS_PASSWORD"):
           "[INFO] OBS_PASSWORD ใน .env ไม่ได้ใช้ใน v2 — ข้ามได้")
 
 _pid_cache: str = ""
-_meetings_cache: dict = {"date": None, "ts": 0.0, "meetings": []}  # 10-min TTL cache
+_meetings_cache: dict = {"date": None, "ts": 0.0, "status": None, "meetings": [], "bridge_mtime": 0.0}  # 10-min TTL cache (only ok_* statuses)
 
 # ─── Operability paths ───────────────────────────────────────
 # log → ~/Library/Logs ; status + pid → ~/Library/Application Support
@@ -110,23 +110,97 @@ def is_teams_in_meeting() -> bool:
 # ─── Calendar helpers ─────────────────────────────────────────
 # คัดลอกจาก v1 ทั้งหมด — อย่าแก้ไข
 
-def get_today_meetings() -> list:
-    """ดึง meeting วันนี้ผ่าน icalBuddy — อ่าน EventKit store โดยตรง
-    ไม่ผ่าน Calendar app → ไม่มีปัญหา -600 / timeout
-    Returns: [{"time": datetime, "name": str}, ...]
+# Calendar lookup status — distinguishes success, "no events", and the various
+# failure modes so the fallback path can report a useful reason to the user.
+CAL_OK_EVENTS         = "ok_events"
+CAL_OK_NO_EVENTS      = "ok_no_events"
+CAL_NO_ACCESS         = "no_access"
+CAL_MISSING_ICALBUDDY = "missing_icalbuddy"
+CAL_TIMEOUT           = "timeout"
+CAL_ERROR             = "error"
+CAL_FROM_APP          = "ok_from_app"   # calendar data from CalendarEventBridge (TeamRecorderBar)
+
+# icalBuddy stderr/stdout keywords that mean "TCC denied Calendar access".
+# Mirrored from Swift PermissionChecker.runIcalBuddyProbe.
+_ICAL_DENIED_KEYWORDS = ("no calendars", "not authorized", "operation not permitted")
+
+
+def _read_events_bridge(path: str) -> "tuple | None":
+    """Try the bridge file written by CalendarEventBridge (TeamRecorderBar).
+    Only used when TEAM_RECORDER_APP=1 (set by WatcherManager when launching the watcher).
+    Returns (CAL_FROM_APP, meetings), (CAL_NO_ACCESS, []), or None (caller falls through to icalBuddy).
     """
+    if not os.getenv("TEAM_RECORDER_APP"):
+        return None  # running via Terminal / make run — use icalBuddy instead
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    today = datetime.now().strftime("%Y-%m-%d")
+    if data.get("date") != today:
+        return None  # stale file from yesterday — fall through to icalBuddy
+    if data.get("authorized") is False:
+        return CAL_NO_ACCESS, []
+    today_date = datetime.now().date()
+    meetings = []
+    for e in data.get("events", []):
+        title = (e.get("title") or "").strip()
+        start_str = e.get("start", "")
+        if not title or not start_str:
+            continue
+        try:
+            start_t = datetime.strptime(start_str, "%H:%M")
+            start_dt = datetime.combine(today_date, start_t.time())
+        except ValueError:
+            continue
+        end_dt = None
+        end_str = e.get("end")
+        if end_str:
+            try:
+                end_t = datetime.strptime(end_str, "%H:%M")
+                end_dt = datetime.combine(today_date, end_t.time())
+            except ValueError:
+                pass
+        meetings.append({"start": start_dt, "end": end_dt, "name": title})
+    log(f"[INFO] events bridge: {len(meetings)} event(s) from app")
+    return CAL_FROM_APP, meetings
+
+
+def get_today_meetings() -> tuple:
+    """ดึง meeting วันนี้ — ลอง bridge file จาก TeamRecorderBar ก่อน, fallback ไป icalBuddy
+    Returns: (status, meetings) where
+      status ∈ {ok_from_app, ok_events, ok_no_events, no_access, missing_icalbuddy, timeout, error}
+      meetings = [{"start": datetime, "end": datetime|None, "name": str}, ...]
+    """
+    events_file = os.path.join(APP_SUPPORT_DIR, "events-today.json")
+    bridge_result = _read_events_bridge(events_file)
+    if bridge_result is not None:
+        return bridge_result
+
     import re as _re
     if not os.path.exists(ICAL_BUDDY):
-        return []  # U5: ไม่ log ซ้ำ — startup warning เตือนไปแล้ว
+        return CAL_MISSING_ICALBUDDY, []
     try:
         result = subprocess.run(
             [ICAL_BUDDY, "-f", "-nc", "-iep", "title,datetime",
              "-b", "||", "-tf", "%H:%M", "-nrd", "eventsToday"],
             capture_output=True, text=True, timeout=10
         )
-        if result.returncode != 0 or not result.stdout.strip():
+        if result.returncode != 0:
+            combined = ((result.stdout or "") + "\n" + (result.stderr or "")).lower()
+            if any(k in combined for k in _ICAL_DENIED_KEYWORDS):
+                detail = (result.stderr or result.stdout or "").strip().splitlines()[0:1]
+                log(f"[WARN] icalBuddy: Calendar access denied — {' '.join(detail)}")
+                return CAL_NO_ACCESS, []
+            log(f"[WARN] icalBuddy exit {result.returncode}: "
+                f"{(result.stderr or result.stdout).strip()[:160]}")
+            return CAL_ERROR, []
+        if not result.stdout.strip():
             log("[INFO] icalBuddy: ไม่มี event วันนี้")
-            return []
+            return CAL_OK_NO_EVENTS, []
 
         meetings = []
         today = datetime.now().date()
@@ -154,28 +228,57 @@ def get_today_meetings() -> list:
                     })
                     current_name = None
 
+        if not meetings:
+            # exit 0 but no parseable events (rare — empty stdout already handled)
+            log("[INFO] icalBuddy: ไม่มี event วันนี้")
+            return CAL_OK_NO_EVENTS, []
         log(f"[INFO] icalBuddy: พบ {len(meetings)} event วันนี้")
-        return meetings
+        return CAL_OK_EVENTS, meetings
 
     except subprocess.TimeoutExpired:
         log("[WARN] icalBuddy timeout — ใช้ชื่อ fallback")
-        return []
+        return CAL_TIMEOUT, []
     except Exception as e:
         log(f"[WARN] icalBuddy failed: {e}")
-        return []
+        return CAL_ERROR, []
 
 
-def _get_today_meetings_cached() -> list:
-    """Cache get_today_meetings() with 10-min TTL — stale if meeting renamed/added during day."""
+# Only successful lookups are cached. Permission/timeout/missing-binary outcomes
+# must re-probe on every recording so a mid-session Calendar grant is picked up.
+_CAL_CACHEABLE = {CAL_OK_EVENTS, CAL_OK_NO_EVENTS, CAL_FROM_APP}
+
+
+def _get_today_meetings_cached() -> tuple:
+    """Cache get_today_meetings() with 10-min TTL — only caches successful outcomes.
+    Returns: (status, meetings) — same shape as get_today_meetings().
+    """
     today = datetime.now().strftime("%Y-%m-%d")
     now   = time.time()
     if (_meetings_cache["date"] == today
-            and now - _meetings_cache["ts"] < 600):   # 600 s = 10 min
-        return _meetings_cache["meetings"]
+            and now - _meetings_cache["ts"] < 600   # 600 s = 10 min
+            and _meetings_cache.get("status") in _CAL_CACHEABLE):
+        if _meetings_cache.get("status") == CAL_FROM_APP:
+            events_file = os.path.join(APP_SUPPORT_DIR, "events-today.json")
+            try:
+                current_mtime = os.path.getmtime(events_file)
+                if current_mtime <= _meetings_cache["bridge_mtime"]:
+                    return _meetings_cache["status"], _meetings_cache["meetings"]
+            except OSError:
+                pass  # file disappeared — fall through to re-fetch
+        else:
+            return _meetings_cache["status"], _meetings_cache["meetings"]
+    status, meetings = get_today_meetings()
     _meetings_cache["date"]     = today
     _meetings_cache["ts"]       = now
-    _meetings_cache["meetings"] = get_today_meetings()
-    return _meetings_cache["meetings"]
+    _meetings_cache["status"]   = status
+    _meetings_cache["meetings"] = meetings
+    if status == CAL_FROM_APP:
+        events_file = os.path.join(APP_SUPPORT_DIR, "events-today.json")
+        try:
+            _meetings_cache["bridge_mtime"] = os.path.getmtime(events_file)
+        except OSError:
+            _meetings_cache["bridge_mtime"] = now
+    return status, meetings
 
 
 def find_matching_meeting(start_time: datetime, meetings: list) -> "str | None":
@@ -199,6 +302,21 @@ def find_matching_meeting(start_time: datetime, meetings: list) -> "str | None":
     if best_name:
         log(f"[INFO] Calendar match: '{best_name}' (diff {best_diff/60:.1f} min)")
     return best_name
+
+
+def fallback_reason_for(calendar_status: "str | None") -> str:
+    """Human-readable reason for falling back to the 'Teams Meeting' name.
+    Surfaced in status.json → lastFallbackReason so the menu bar can show it.
+    """
+    return {
+        CAL_NO_ACCESS:         "calendar access denied",
+        CAL_MISSING_ICALBUDDY: "icalBuddy not installed",
+        CAL_TIMEOUT:           "icalBuddy timed out",
+        CAL_OK_NO_EVENTS:      "no events on calendar",
+        CAL_OK_EVENTS:         "no event matched start time (±5 min)",
+        CAL_FROM_APP:          "no event matched start time (±5 min)",
+        CAL_ERROR:             "icalBuddy error",
+    }.get(calendar_status or "", "calendar lookup unavailable")
 
 
 def sanitize_filename(name: str) -> str:
@@ -280,7 +398,9 @@ def rename_recording(session: dict, duration_secs: float):
             log(f"[INFO] Recording {duration_secs:.0f}s < {MIN_DURATION}s → accidental call")
         else:
             meeting_name = "Teams Meeting"
-            log("[WARN] ไม่มีชื่อ meeting จาก calendar → ใช้ชื่อ fallback")
+            reason = fallback_reason_for(session.get("calendar_status"))
+            session["fallback_reason"] = reason
+            log(f"[WARN] ไม่มีชื่อ meeting จาก calendar → ใช้ชื่อ fallback ({reason})")
 
         clean_name = sanitize_filename(meeting_name)
         base_name  = f"{clean_name} - {ts}{ext}"
@@ -428,11 +548,13 @@ def notify(title: str, message: str):
 def write_status(state: str, meeting_name=None, recording_path=None,
                  started_at=None, last_error=None,
                  last_recording_path=None, last_recording_name=None,
-                 last_saved_at=None, last_status=None):
+                 last_saved_at=None, last_status=None,
+                 last_fallback_reason=None):
     """เขียน status.json แบบ atomic (temp + os.replace) — best-effort
     เป็น data source ของ menu bar app ในอนาคต — app ห้าม parse จาก log file
     state: idle | waiting | recording | stopping | error
     last_recording_* — คงอยู่ใน waiting state เพื่อให้ menu bar app แสดงไฟล์ล่าสุด
+    last_fallback_reason — set when the recording fell back to "Teams Meeting"
     """
     try:
         os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
@@ -446,6 +568,7 @@ def write_status(state: str, meeting_name=None, recording_path=None,
             "lastRecordingName":  last_recording_name,
             "lastSavedAt":        last_saved_at,
             "lastStatus":         last_status,
+            "lastFallbackReason": last_fallback_reason,
             "updatedAt":          datetime.now().isoformat(timespec="seconds"),
         }
         tmp = STATUS_FILE + ".tmp"
@@ -730,7 +853,7 @@ def start_recording_v2(proc: "subprocess.Popen",
         return None
 
     # ─── ดึงชื่อ meeting จาก calendar (cached per day) ───────
-    meetings = _get_today_meetings_cached()
+    cal_status, meetings = _get_today_meetings_cached()
     meeting_name = find_matching_meeting(start_time, meetings)
     if meeting_name:
         log("📅 Meeting: " + meeting_name)
@@ -743,10 +866,11 @@ def start_recording_v2(proc: "subprocess.Popen",
            f"🔴 กำลังบันทึก: {meeting_name}" if meeting_name
            else "🔴 กำลังบันทึก Teams meeting")
     return {
-        "start_time":     start_time,
-        "recording_path": rec_path,
-        "recording_dir":  recording_dir,
-        "meeting_name":   meeting_name,
+        "start_time":      start_time,
+        "recording_path":  rec_path,
+        "recording_dir":   recording_dir,
+        "meeting_name":    meeting_name,
+        "calendar_status": cal_status,
     }
 
 
@@ -774,6 +898,14 @@ def stop_recording_v2(proc: "subprocess.Popen",
     response = _readline_timeout(proc.stdout, 30.0)
     if response == "STOPPED_OK":
         log("■  Recording stopped")
+        if session.get("meeting_name") is None and session.get("calendar_status") != CAL_NO_ACCESS:
+            _meetings_cache["date"] = None
+            fresh_status, fresh_meetings = _get_today_meetings_cached()
+            retry_name = find_matching_meeting(session["start_time"], fresh_meetings)
+            if retry_name:
+                log(f"[INFO] Calendar retry at stop: matched '{retry_name}'")
+                session["meeting_name"] = retry_name
+                session["calendar_status"] = fresh_status
         final_path = rename_recording(session, duration_secs)
         rec_status = "complete"
         if final_path:
@@ -793,6 +925,7 @@ def stop_recording_v2(proc: "subprocess.Popen",
             last_recording_name=os.path.basename(final_path) if final_path else None,
             last_saved_at=datetime.now().isoformat(timespec="seconds"),
             last_status=rec_status if final_path else None,
+            last_fallback_reason=session.get("fallback_reason"),
         )
     elif response and response.startswith("STOPPED_ERROR"):
         reason = response[len("STOPPED_ERROR:"):].strip()
@@ -906,15 +1039,47 @@ def run_doctor() -> int:
     else:
         _check("mic device", "ok", "ใช้ default mic")
 
-    # Calendar — พิสูจน์สิทธิ์ไม่ได้แน่ชัดถ้าวันนี้ไม่มี event
-    meetings = get_today_meetings()
-    if meetings:
-        _check("Calendar", "ok", f"อ่าน calendar ได้ ({len(meetings)} event)")
-    else:
-        _check("Calendar permission", "warn",
-               "พิสูจน์ไม่ได้ — วันนี้ไม่มี event หรือยังไม่ได้ให้สิทธิ์ "
-               "(ดู: make permissions)")
+    # Calendar — inspect bridge file directly (works without TEAM_RECORDER_APP), then icalBuddy
+    events_file = os.path.join(APP_SUPPORT_DIR, "events-today.json")
+    _bridge_result = None
+    try:
+        with open(events_file, encoding="utf-8") as _f:
+            _bd = json.load(_f)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if _bd.get("date") == today_str:
+            if _bd.get("authorized") is False:
+                _bridge_result = (CAL_NO_ACCESS, [])
+            else:
+                _bridge_result = (CAL_FROM_APP, _bd.get("events", []))
+    except Exception:
+        pass
 
+    if _bridge_result is not None:
+        bstatus, bevents = _bridge_result
+        if bstatus == CAL_FROM_APP:
+            _check("Calendar (app bridge)", "ok",
+                   f"events-today.json มี {len(bevents)} event — TeamRecorderBar bridge พร้อมใช้")
+        else:
+            _check("Calendar (app bridge)", "warn",
+                   "events-today.json มีอยู่แต่ authorized=false — ตรวจ Settings → Privacy & Security → Calendars → TeamRecorderBar")
+    else:
+        cal_status, meetings = get_today_meetings()
+        if cal_status == CAL_OK_EVENTS:
+            _check("Calendar", "ok", f"อ่าน calendar ได้ผ่าน icalBuddy ({len(meetings)} event)")
+        elif cal_status == CAL_OK_NO_EVENTS:
+            _check("Calendar", "ok", "อ่าน calendar ได้ผ่าน icalBuddy (วันนี้ไม่มี event)")
+        elif cal_status == CAL_NO_ACCESS:
+            _check("Calendar permission", "warn",
+                   "ถูกปฏิเสธสิทธิ์ Calendar — Settings → Privacy & Security → Calendars → TeamRecorderBar (ดู: make permissions)")
+        elif cal_status == CAL_MISSING_ICALBUDDY:
+            _check("Calendar", "warn", "icalBuddy ไม่พบ และไม่มี bridge file — brew install ical-buddy หรือเปิด TeamRecorderBar")
+        elif cal_status == CAL_TIMEOUT:
+            _check("Calendar", "warn", "icalBuddy timeout")
+        else:
+            _check("Calendar", "warn", "อ่าน calendar ไม่ได้ — ดู log สำหรับรายละเอียด")
+
+    # icalBuddy is the fallback path used only by `make run` / Terminal context.
+    # Under TeamRecorderBar the bridge file is used instead.
     if os.path.exists(ICAL_BUDDY):
         try:
             r = subprocess.run(
@@ -924,15 +1089,15 @@ def run_doctor() -> int:
             )
             combined = (r.stdout + "\n" + r.stderr).lower()
             if "no calendars" in combined or "not authorized" in combined:
-                _check("icalBuddy Calendar access", "warn",
-                       "ยังอ่าน Calendar ไม่ได้ — ให้สิทธิ์ตอน Setup Guide")
+                _check("icalBuddy (fallback)", "warn",
+                       "Terminal ยังไม่มีสิทธิ์ Calendar — ใช้ได้เฉพาะ make run; TeamRecorderBar ใช้ bridge file แทน")
             else:
-                _check("icalBuddy Calendar access", "ok",
-                       "เรียก icalBuddy ได้ (วันนี้อาจไม่มี event)")
+                _check("icalBuddy (fallback)", "ok",
+                       "Terminal มีสิทธิ์ Calendar — ใช้เมื่อรันผ่าน make run")
         except subprocess.TimeoutExpired:
-            _check("icalBuddy Calendar access", "warn", "timeout")
+            _check("icalBuddy (fallback)", "warn", "timeout")
         except Exception as e:
-            _check("icalBuddy Calendar access", "warn", str(e))
+            _check("icalBuddy (fallback)", "warn", str(e))
 
     # สิ่งที่ตรวจแบบ read-only ไม่ได้ — ซื่อสัตย์ว่ายืนยันไม่ได้
     _check("Screen Recording permission", "skip",

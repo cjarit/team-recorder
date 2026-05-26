@@ -158,7 +158,8 @@ class WatcherManager {
         }
         // Run from the project directory so relative .env lookup works
         p.currentDirectoryURL = url.deletingLastPathComponent()
-        p.environment = ProcessInfo.processInfo.environment.merging(["NOTIFY": "0"]) { $1 }
+        p.environment = ProcessInfo.processInfo.environment.merging(
+            ["NOTIFY": "0", "TEAM_RECORDER_APP": "1"]) { $1 }
         p.standardOutput = FileHandle.nullDevice
 
         // Capture stderr into a pipe so early crashes produce user-visible detail

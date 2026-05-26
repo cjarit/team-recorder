@@ -75,7 +75,7 @@ Screen Recording → Microphone → Calendar
 เมื่อกด Finish แอปจะเริ่ม watcher ให้เลย
 
 Screen Recording ต้อง relaunch แอปหลังเปิดสิทธิ์ตามข้อกำหนดของ macOS.
-Calendar อาจมี prompt เพิ่มสำหรับ `icalBuddy` ระหว่าง Setup เพราะ watcher ใช้ helper นี้อ่าน Calendar ตอนตั้งชื่อไฟล์.
+หลังกด Finish แอปจะเขียน calendar events ลงไฟล์ `events-today.json` ใน Application Support และ watcher อ่านจากไฟล์นั้น — ไม่มี prompt เพิ่มเติม
 
 **Launch at Login** — ต้องติดตั้งแอปไว้ที่ `/Applications/` ก่อน (ใช้ `make menu-bar-install`)
 ถ้ากดแล้วไม่ work จะมี alert แจ้ง

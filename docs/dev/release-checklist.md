@@ -18,7 +18,7 @@
 
 - [ ] Screen Recording step: instructions box + "Open System Settings" + "Relaunch App" shown; no "Grant Access"
 - [ ] Mic step: "Grant Access" when undetermined; "Open System Settings" when denied; no relaunch button
-- [ ] Calendar step: grants Team Recorder Calendar access and primes `icalBuddy` access before Finish
+- [ ] Calendar step: grants Calendar access → status shows "Calendar bridge ready — recordings will use meeting titles." → `events-today.json` written to Application Support
 - [ ] Skip for Now: disabled until required Screen Recording permission/relaunch path is complete
 - [ ] Close button (×): app remains idle if setup is incomplete
 - [ ] Recover Recorder… clears stale `recording` / stuck `stopping` state without restarting the app

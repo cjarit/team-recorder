@@ -19,8 +19,7 @@ class StatusBarController {
     private var lastRecordingItem:   NSMenuItem!
     private var launchAtLoginItem:   NSMenuItem!
     private var launchWarningItem:   NSMenuItem!   // hidden unless watcher failed to start
-    fileprivate var icalBuddyStatusItem: NSMenuItem!   // shows live icalBuddy probe state
-    fileprivate var icalBuddyProbeInFlight = false     // prevents stacking probes
+    fileprivate var calendarStatusItem: NSMenuItem!
     private var permSubmenuDelegate: PermSubmenuDelegate! // kept alive for NSMenuDelegate
 
     // File watcher for status.json
@@ -178,14 +177,14 @@ class StatusBarController {
 
         permSubmenu.addItem(.separator())
 
-        icalBuddyStatusItem = NSMenuItem(
-            title: icalBuddyMenuTitle(),
-            action: #selector(retryIcalBuddyAccess),
+        calendarStatusItem = NSMenuItem(
+            title: calendarMenuTitle(),
+            action: #selector(checkCalendarAccess),
             keyEquivalent: ""
         )
-        icalBuddyStatusItem.target = self
-        icalBuddyStatusItem.toolTip = "Click to re-probe. Status updates each time you open this menu."
-        permSubmenu.addItem(icalBuddyStatusItem)
+        calendarStatusItem.target = self
+        calendarStatusItem.toolTip = "Click to refresh calendar events."
+        permSubmenu.addItem(calendarStatusItem)
 
         permItem.submenu = permSubmenu
         menu.addItem(permItem)
@@ -434,6 +433,9 @@ class StatusBarController {
             let time = String(savedAt.dropFirst(11).prefix(5))  // "HH:MM"
             label += " (\(time))"
         }
+        if let reason = currentStatus?.lastFallbackReason, !reason.isEmpty {
+            label += " — fallback: \(reason)"
+        }
         lastRecordingItem.title = label
         if currentStatus?.lastRecordingPath != nil {
             lastRecordingItem.isEnabled = true
@@ -480,27 +482,20 @@ class StatusBarController {
         }
     }
 
-    @objc private func retryIcalBuddyAccess() {
+    @objc private func checkCalendarAccess() {
         NSApp.activate(ignoringOtherApps: true)
-        // Probe is async (≤4s). Result shown in the completion alert below.
-        PermissionChecker.primeIcalBuddyCalendar(
-            projectDirectory: WatcherManager.shared.projectDirectory
-        ) { [weak self] ok, detail in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                UserDefaults.standard.set(ok, forKey: "icalBuddyVerified")
-                self.icalBuddyStatusItem.title = self.icalBuddyMenuTitle()
-                let result = NSAlert()
-                result.messageText = ok ? "icalBuddy Access Confirmed" : "icalBuddy Access Advisory"
-                result.informativeText = ok
-                    ? "icalBuddy can read Calendar events. Recordings will be named after meeting titles."
-                    : "icalBuddy probe returned an advisory:\n\(detail)\n\nRecordings may be named \"Teams Meeting\". Grant Calendar access to icalBuddy in System Settings → Privacy & Security → Automation."
-                result.alertStyle = ok ? .informational : .warning
-                result.addButton(withTitle: "OK")
-                NSApp.activate(ignoringOtherApps: true)
-                result.runModal()
-            }
-        }
+        CalendarEventBridge.shared.writeEventsIfAuthorized()
+        let ok = PermissionChecker.calendar() == .granted
+        calendarStatusItem.title = calendarMenuTitle()
+        let result = NSAlert()
+        result.messageText = ok ? "Calendar Access Confirmed" : "Calendar Access Not Granted"
+        result.informativeText = ok
+            ? "Calendar events written. Recordings will be named after meeting titles."
+            : "Calendar access is not granted.\nGo to System Settings → Privacy & Security → Calendars → enable TeamRecorderBar."
+        result.alertStyle = ok ? .informational : .warning
+        result.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        result.runModal()
     }
 
     // MARK: — Icon helpers
@@ -667,11 +662,14 @@ class StatusBarController {
         }
     }
 
-    // MARK: — icalBuddy status helpers
+    // MARK: — Calendar status helpers
 
-    fileprivate func icalBuddyMenuTitle() -> String {
-        let verified = UserDefaults.standard.bool(forKey: "icalBuddyVerified")
-        return verified ? "icalBuddy: Verified ✓" : "icalBuddy: No Access ⚠"
+    fileprivate func calendarMenuTitle() -> String {
+        switch PermissionChecker.calendar() {
+        case .granted:      return "Calendar: OK"
+        case .denied:       return "Calendar: No Access ⚠"
+        case .undetermined: return "Calendar: Not Set Up ⚠"
+        }
     }
 }
 
@@ -682,17 +680,7 @@ private class PermSubmenuDelegate: NSObject, NSMenuDelegate {
     weak var controller: StatusBarController?
 
     func menuWillOpen(_ menu: NSMenu) {
-        guard let c = controller, !c.icalBuddyProbeInFlight else { return }
-        c.icalBuddyProbeInFlight = true
-        PermissionChecker.primeIcalBuddyCalendar(
-            projectDirectory: WatcherManager.shared.projectDirectory
-        ) { [weak c] ok, _ in
-            DispatchQueue.main.async {
-                guard let c else { return }
-                c.icalBuddyProbeInFlight = false
-                UserDefaults.standard.set(ok, forKey: "icalBuddyVerified")
-                c.icalBuddyStatusItem.title = c.icalBuddyMenuTitle()
-            }
-        }
+        guard let c = controller else { return }
+        c.calendarStatusItem.title = c.calendarMenuTitle()
     }
 }

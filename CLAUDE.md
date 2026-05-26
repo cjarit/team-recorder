@@ -22,7 +22,7 @@ macOS-only tool that watches for Microsoft Teams meetings and automatically reco
 ```
 Team Recorder/
 ├── teams_recorder_v2.py     Main runtime — do not refactor
-├── test_recorder_v2.py      Unit tests (78 pass, 3 skipped)
+├── test_recorder_v2.py      Unit tests (93 pass, 3 skipped)
 ├── recorder/
 │   ├── recorder             Compiled Swift binary — committed to repo
 │   ├── main.swift           Swift source (Sources/recorder/main.swift)
@@ -220,11 +220,14 @@ Get mic UID: `recorder/recorder --list-devices`
 |------|-----|---------------------|
 | `lsof` | Lists open UDP connections by PID | psutil, netstat |
 | `pgrep -x MSTeams` | Finds Teams process | psutil, subprocess alternatives |
-| `icalBuddy` | Reads Apple Calendar directly (no app needed) | JXA, AppleScript, caldav |
+| `icalBuddy` | Reads Apple Calendar directly when running via Terminal/`make run` | JXA, AppleScript, caldav |
+| `CalendarEventBridge` (Swift) | TeamRecorderBar reads Calendar via EKEventStore → writes `events-today.json` → Python reads file; avoids Python.framework TCC chain | icalBuddy under the app (TCC attributes request to Python, not the app) |
 | `ScreenCaptureKit` | System audio capture without virtual drivers | BlackHole, soundflower |
 | `SMAppService.mainApp` | macOS 13+ Login Item — menu bar toggle, no plist editing | LaunchAgent .plist, systemd, cron |
 
 **Why not JXA/AppleScript for calendar?** JXA hangs when Calendar app is closed. icalBuddy reads EventKit store directly — confirmed production issue, do not revert.
+
+**Calendar architecture (TeamRecorderBar):** `Python.framework` has its own bundle ID (`org.python.python`). macOS TCC uses the nearest ancestor with a bundle ID as the responsible app, so Python claims that role — icalBuddy's Calendar request is attributed to Python, which cannot be granted Calendar via System Settings UI. Fix: TeamRecorderBar reads Calendar via its own `EKEventStore` grant, writes `APP_SUPPORT_DIR/events-today.json`, Python reads the file (no TCC needed). icalBuddy remains the fallback for `make run` / Terminal contexts where TCC sees Terminal.
 
 ---
 
@@ -237,7 +240,7 @@ Inline Thai comments are team knowledge from real testing sessions. They explain
 ## Test Coverage
 
 ```
-test_recorder_v2.py — 78 passed, 3 skipped
+test_recorder_v2.py — 93 passed, 3 skipped
 ```
 
 The 3 skipped tests are `@LIVE_SMOKE` — require a real binary and Screen Recording permission. Run with `RUN_LIVE_SMOKE=1 make test`.
@@ -259,12 +262,10 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | Quitting TeamRecorderBar stops the watcher | Watcher was auto-started by the app (managed process) | Expected — `stopManagedOnly()` only terminates processes the app itself started; `make run` watchers are unaffected |
 | "Launch at Login" toggle fails | App is not in `/Applications/` | `make menu-bar-install` copies to `/Applications/` and then opens the app |
 | Setup window appears again after reinstall | `UserDefaults.setupCompleted` is cleared when the app is deleted | Expected — re-run setup to re-grant permissions, then it won't show again |
-| Calendar prompt appears for icalBuddy during setup | macOS grants Calendar per helper process | Expected — allow it during Setup so a live meeting does not trigger it later |
 | Red recording icon persists after watcher crash | `status.json` can outlive the watcher process | Use menu bar → Recover Recorder…; the app validates stale PID/status state |
 | ⚠ menu icon after install from GitHub or different folder | `watcher_path.txt` bakes an absolute path at build time — mismatches break silently | `make menu-bar-install` from the current repo folder; or `make clean-reinstall` for a full reset |
 | `ModuleNotFoundError: No module named 'dotenv'` on app launch (but `make run` works) | Launch Services strips Homebrew from PATH; `env python3` resolved to system Python 3.9 which lacks dotenv | `python_path.txt` now pins the Homebrew interpreter at build time — `make menu-bar-install` to refresh |
-| Setup Step 3 Calendar — Finish stuck (legacy installs) | Old `icalBuddyPrimed` bool gated Finish if probe failed | Fixed: probe is now advisory only; Finish advances whenever Calendar system permission is granted |
-| icalBuddy probe result in menu differs from Python | Path resolution order mismatch between Swift and Python | Fixed: Swift now checks process env → `.env` → `which` → homebrew (same order as Python `load_dotenv`) |
+| Recording named "Teams Meeting" when using TeamRecorderBar | Calendar not granted to TeamRecorderBar, or bridge file stale | System Settings → Privacy & Security → Calendars → enable TeamRecorderBar; then menu bar → Permissions → "Calendar: OK" should appear |
 
 ---
 

@@ -14,6 +14,9 @@ struct RecorderStatus: Codable {
     var lastRecordingName: String?
     var lastSavedAt: String?
     var lastStatus: String?
+    /// Set by the watcher when the recording fell back to the "Teams Meeting" name.
+    /// Plain-English reason, e.g. "calendar access denied", "no events on calendar".
+    var lastFallbackReason: String?
     var updatedAt: String?
 
     var updatedDate: Date? {

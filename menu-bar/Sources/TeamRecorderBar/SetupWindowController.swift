@@ -144,6 +144,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
         completingSetup = true
         UserDefaults.standard.set(true, forKey: "setupCompleted")
+        CalendarEventBridge.shared.writeEventsIfAuthorized()
+        CalendarEventBridge.shared.startObserving()
         WatcherManager.shared.autoStartIfNeeded()
         if closeWindow {
             window?.close()   // triggers windowWillClose — guard prevents re-entry
@@ -306,23 +308,22 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             statusText.stringValue = "Not yet requested"
         }
 
-        // Step 3 Calendar: overlay icalBuddy probe state on the status text
+        // Step 3 Calendar: overlay bridge probe state on the status text
         if currentStep == 2 && status == .granted {
             switch icalBuddyProbeState {
             case .notRun, .running:
-                statusText.stringValue = "Checking icalBuddy calendar access…"
+                statusText.stringValue = "Checking calendar access…"
             case .verified:
-                statusText.stringValue = "Calendar verified — icalBuddy can read events."
+                statusText.stringValue = "Calendar bridge ready — recordings will use meeting titles."
             case .warning:
-                statusText.stringValue = "Calendar granted. Retry icalBuddy Access if recordings are named \"Teams Meeting\"."
+                statusText.stringValue = "Calendar permission not granted. Recordings will be named \"Teams Meeting\"."
             }
         }
 
         // primaryButton — single action, title/target changes by step+state
         if currentStep == 2 && status == .granted {
-            // Always show retry on step 3; result is advisory-only and never gates Finish
             primaryButton.isHidden = false
-            primaryButton.title = "Retry icalBuddy Access"
+            primaryButton.title = "Refresh Calendar Events"
         } else if status == .granted {
             primaryButton.isHidden = currentStep != 0 || !screenRecordingRequestedThisSession
             if currentStep == 0 && screenRecordingRequestedThisSession {
@@ -415,17 +416,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         guard case .notRun = icalBuddyProbeState else { return }
         icalBuddyProbeState = .running
         refreshStatus()
-        PermissionChecker.primeIcalBuddyCalendar(
-            projectDirectory: WatcherManager.shared.projectDirectory
-        ) { [weak self] ok, detail in
-            guard let self else { return }
-            self.icalBuddyProbeState = ok ? .verified : .warning(detail: detail)
-            UserDefaults.standard.set(ok, forKey: "icalBuddyVerified")
-            self.refreshStatus()
-            if !ok {
-                NSLog("[TeamRecorderBar] icalBuddy calendar probe: advisory warning — \(detail)")
-            }
-        }
+        CalendarEventBridge.shared.writeEventsIfAuthorized()
+        let ok = PermissionChecker.calendar() == .granted
+        icalBuddyProbeState = ok ? .verified : .warning(detail: "Calendar access not granted")
+        refreshStatus()
     }
 
     private func openSettings() {

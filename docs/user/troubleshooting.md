@@ -5,7 +5,7 @@
 | Problem | Fix |
 |---------|-----|
 | Recording doesn't start | Check Screen Recording: System Settings → Privacy & Security → Screen Recording → Team Recorder ✓ → relaunch app |
-| File named "Teams Meeting" (not meeting title) | Calendar permission missing for Team Recorder or `icalBuddy` — re-run Setup Guide… and allow Full Access |
+| File named "Teams Meeting" (not meeting title) | Calendar permission missing for TeamRecorderBar — re-run Setup Guide… and allow Full Access |
 | No microphone audio | System Settings → Privacy & Security → Microphone → Team Recorder ✓ |
 | Recording continues after meeting ends | Expected — watcher waits 8s before confirming meeting ended (false-stop prevention) |
 | Red recording icon stays after Stop / app feels stuck | Click menu bar icon → Recover Recorder…; current file may be marked incomplete |
@@ -20,9 +20,7 @@
 | "Relaunch App" shows an error alert | Quit manually from the menu bar, then reopen `/Applications/TeamRecorderBar.app` |
 | Grey waveform but no recording | Run `make doctor` in the project folder — shows permission/disk/binary status |
 | Setup Guide appeared on an update/reinstall | Expected — clear saved state with `make reset-setup`, then reopen the app |
-| Calendar prompt appears twice during setup | Expected if the second prompt is for `icalBuddy`; allow it so live meetings do not prompt again |
-| Setup Step 3 Calendar — Finish button unresponsive | icalBuddy probe result is now advisory only; click Finish whenever Calendar permission is granted |
-| icalBuddy shows warning in menu bar | Open Permissions → Retry icalBuddy Access to re-probe; or run Setup Guide again |
+| Recordings named "Teams Meeting" after granting Calendar | Bridge file may be stale — open Permissions → Calendar: OK (click to refresh), or quit and reopen the app |
 
 ## Menu bar shows ⚠ Can't start watcher
 
@@ -76,4 +74,4 @@ Runs `make uninstall` then `make menu-bar-install` in one step.
 | Screen Recording | System Settings → Privacy & Security → Screen Recording → TeamRecorderBar → click **−** |
 | Microphone | System Settings → Privacy & Security → Microphone → TeamRecorderBar → toggle off |
 | Calendar | System Settings → Privacy & Security → Calendars → TeamRecorderBar → **None** |
-| Automation (icalBuddy) | System Settings → Privacy & Security → Automation → icalBuddy → toggle off |
+| Automation (icalBuddy) | System Settings → Privacy & Security → Automation → icalBuddy → toggle off (only if listed; only relevant when running via Terminal / `make run`) |

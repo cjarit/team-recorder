@@ -10,6 +10,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -139,10 +140,12 @@ def test_check_recorder_ready_returns_true_on_success(monkeypatch, tmp_path):
 def test_start_recording_v2_sends_start_command(monkeypatch, tmp_path):
     proc = _make_proc(stdout_lines=["STARTED"])
     monkeypatch.setattr(v2, "check_disk_space", lambda _: True)
-    monkeypatch.setattr(v2, "get_today_meetings", lambda: [])
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
     monkeypatch.setattr(v2, "find_matching_meeting", lambda *a: None)
     # patch select so _readline_timeout returns immediately
     monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    # bypass the meetings cache so the mocked get_today_meetings is always called
+    v2._meetings_cache["date"] = None
 
     result = v2.start_recording_v2(proc, str(tmp_path))
 
@@ -160,8 +163,9 @@ def test_start_recording_v2_captures_meeting_name(monkeypatch, tmp_path):
     monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
 
     fake_meetings = [{"name": "Design Sync", "time": datetime.now()}]
-    monkeypatch.setattr(v2, "get_today_meetings", lambda: fake_meetings)
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_EVENTS, fake_meetings))
     monkeypatch.setattr(v2, "find_matching_meeting", lambda t, m: "Design Sync")
+    v2._meetings_cache["date"] = None
 
     result = v2.start_recording_v2(proc, str(tmp_path))
 
@@ -406,15 +410,18 @@ def test_rename_recording_fallback_no_name(tmp_path):
     rec = tmp_path / "rec_10-00_01-01-2026.m4a"
     rec.write_bytes(b"audio")
     session = {
-        "start_time":     datetime(2026, 1, 1, 10, 0, 0),
-        "recording_path": str(rec),
-        "recording_dir":  str(tmp_path),
-        "meeting_name":   None,
+        "start_time":      datetime(2026, 1, 1, 10, 0, 0),
+        "recording_path":  str(rec),
+        "recording_dir":   str(tmp_path),
+        "meeting_name":    None,
+        "calendar_status": v2.CAL_NO_ACCESS,
     }
     v2.rename_recording(session, 600.0)
     files = list(tmp_path.glob("*.m4a"))
     assert len(files) == 1
     assert "Teams Meeting" in files[0].name
+    # fallback reason must be stashed on the session for write_status to surface
+    assert session.get("fallback_reason") == "calendar access denied"
 
 
 def test_rename_recording_short_call_no_name(tmp_path):
@@ -528,11 +535,12 @@ def test_meetings_cache_invalidates_on_new_day(monkeypatch):
 
     def fake_get():
         calls.append(1)
-        return [{"name": "Standup", "time": datetime.now()}]
+        return (v2.CAL_OK_EVENTS, [{"name": "Standup", "time": datetime.now()}])
 
     monkeypatch.setattr(v2, "get_today_meetings", fake_get)
     # Reset cache state
     v2._meetings_cache["date"] = None
+    v2._meetings_cache["status"] = None
     v2._meetings_cache["meetings"] = []
 
     v2._get_today_meetings_cached()
@@ -551,10 +559,11 @@ def test_meetings_cache_invalidates_on_new_day(monkeypatch):
 # ─── U5: icalBuddy startup warning ───────────────────────────
 
 def test_ical_buddy_missing_returns_empty_list(monkeypatch):
-    """U5: get_today_meetings() returns [] silently when icalBuddy missing."""
+    """U5: get_today_meetings() returns missing_icalbuddy status when binary missing."""
     monkeypatch.setattr(v2, "ICAL_BUDDY", "/nonexistent/icalBuddy")
-    result = v2.get_today_meetings()
-    assert result == [], "must return empty list when icalBuddy not found"
+    status, meetings = v2.get_today_meetings()
+    assert status == v2.CAL_MISSING_ICALBUDDY
+    assert meetings == []
 
 
 # ─── sanitize_filename tests ──────────────────────────────────
@@ -749,13 +758,14 @@ def test_calendar_cache_ttl(monkeypatch):
 
     def fake_fetch():
         call_count[0] += 1
-        return []
+        return (v2.CAL_OK_NO_EVENTS, [])
 
     monkeypatch.setattr(v2, "get_today_meetings", fake_fetch)
 
     # Force stale cache (ts = 0 → definitely older than 600 s)
-    v2._meetings_cache["date"] = datetime.now().strftime("%Y-%m-%d")
-    v2._meetings_cache["ts"]   = 0.0
+    v2._meetings_cache["date"]   = datetime.now().strftime("%Y-%m-%d")
+    v2._meetings_cache["ts"]     = 0.0
+    v2._meetings_cache["status"] = None
 
     v2._get_today_meetings_cached()
     v2._get_today_meetings_cached()  # second call — cache still fresh
@@ -1021,7 +1031,7 @@ def test_run_doctor_returns_zero_when_healthy(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(v2, "RECORDING_DIR", str(tmp_path))
     monkeypatch.setattr(v2, "check_recorder_ready", lambda: True)
     monkeypatch.setattr(v2, "check_disk_space", lambda d: True)
-    monkeypatch.setattr(v2, "get_today_meetings", lambda: [])
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
     monkeypatch.setattr(v2, "ICAL_BUDDY", "/nonexistent/icalBuddy")
     monkeypatch.setenv("AUDIO_INPUT_DEVICE_UID", "")
     rc = v2.run_doctor()
@@ -1033,7 +1043,7 @@ def test_run_doctor_fails_when_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(v2, "RECORDING_DIR", str(tmp_path))
     monkeypatch.setattr(v2, "check_recorder_ready", lambda: False)
     monkeypatch.setattr(v2, "check_disk_space", lambda d: True)
-    monkeypatch.setattr(v2, "get_today_meetings", lambda: [])
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
     monkeypatch.setattr(v2, "ICAL_BUDDY", "/nonexistent/icalBuddy")
     monkeypatch.setenv("AUDIO_INPUT_DEVICE_UID", "")
     assert v2.run_doctor() == 1
@@ -1198,3 +1208,241 @@ def test_manual_stop_helper_noop_when_not_recording(monkeypatch):
 
     assert calls == [], "stop_recording_v2 must NOT be called when no session"
     assert suppress is False
+
+
+# ─── Calendar lookup status tests ─────────────────────────────
+
+class _FakeCompleted:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _patch_icalbuddy(monkeypatch, completed=None, exc=None):
+    """Patch ICAL_BUDDY to a path that exists and subprocess.run to return completed/raise exc."""
+    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(v2, "ICAL_BUDDY", "/fake/icalBuddy")
+
+    def fake_run(*a, **kw):
+        if exc is not None:
+            raise exc
+        return completed
+    monkeypatch.setattr(v2.subprocess, "run", fake_run)
+
+
+def test_get_today_meetings_no_access_status(monkeypatch):
+    """rc!=0 + 'No calendars' stderr → CAL_NO_ACCESS."""
+    _patch_icalbuddy(monkeypatch,
+                     _FakeCompleted(returncode=1, stdout="", stderr="error: No calendars."))
+    status, meetings = v2.get_today_meetings()
+    assert status == v2.CAL_NO_ACCESS
+    assert meetings == []
+
+
+def test_get_today_meetings_generic_error_status(monkeypatch):
+    """rc!=0 with no permission keywords → CAL_ERROR."""
+    _patch_icalbuddy(monkeypatch,
+                     _FakeCompleted(returncode=2, stdout="", stderr="boom"))
+    status, _ = v2.get_today_meetings()
+    assert status == v2.CAL_ERROR
+
+
+def test_get_today_meetings_timeout_status(monkeypatch):
+    """subprocess.TimeoutExpired → CAL_TIMEOUT."""
+    _patch_icalbuddy(monkeypatch,
+                     exc=v2.subprocess.TimeoutExpired(cmd="icalBuddy", timeout=10))
+    status, _ = v2.get_today_meetings()
+    assert status == v2.CAL_TIMEOUT
+
+
+def test_get_today_meetings_no_events_status(monkeypatch):
+    """rc=0 + empty stdout → CAL_OK_NO_EVENTS."""
+    _patch_icalbuddy(monkeypatch, _FakeCompleted(returncode=0, stdout=""))
+    status, meetings = v2.get_today_meetings()
+    assert status == v2.CAL_OK_NO_EVENTS
+    assert meetings == []
+
+
+def test_get_today_meetings_parses_events_status(monkeypatch):
+    """rc=0 + valid icalBuddy output → CAL_OK_EVENTS with parsed meetings."""
+    stdout = "||Standup\n10:00 - 10:30\n||Design Sync\n14:00 - 15:00\n"
+    _patch_icalbuddy(monkeypatch, _FakeCompleted(returncode=0, stdout=stdout))
+    status, meetings = v2.get_today_meetings()
+    assert status == v2.CAL_OK_EVENTS
+    assert [m["name"] for m in meetings] == ["Standup", "Design Sync"]
+
+
+def test_meetings_cache_does_not_cache_failures(monkeypatch):
+    """Cache must re-probe on no_access / timeout / error / missing — only ok_* outcomes pin."""
+    calls = []
+
+    def fake_get():
+        calls.append(1)
+        return (v2.CAL_NO_ACCESS, [])
+
+    monkeypatch.setattr(v2, "get_today_meetings", fake_get)
+    v2._meetings_cache["date"]     = None
+    v2._meetings_cache["status"]   = None
+    v2._meetings_cache["meetings"] = []
+
+    v2._get_today_meetings_cached()
+    v2._get_today_meetings_cached()
+    assert len(calls) == 2, "permission failure must not be cached"
+
+
+def test_fallback_reason_for_known_statuses():
+    assert v2.fallback_reason_for(v2.CAL_NO_ACCESS)         == "calendar access denied"
+    assert v2.fallback_reason_for(v2.CAL_MISSING_ICALBUDDY) == "icalBuddy not installed"
+    assert v2.fallback_reason_for(v2.CAL_TIMEOUT)           == "icalBuddy timed out"
+    assert v2.fallback_reason_for(v2.CAL_OK_NO_EVENTS)      == "no events on calendar"
+    assert v2.fallback_reason_for(v2.CAL_OK_EVENTS)         == "no event matched start time (±5 min)"
+    assert v2.fallback_reason_for(v2.CAL_FROM_APP)          == "no event matched start time (±5 min)"
+    assert v2.fallback_reason_for(v2.CAL_ERROR)             == "icalBuddy error"
+
+
+# ─── CalendarEventBridge: _read_events_bridge ─────────────────
+
+def test_read_events_bridge_skipped_without_env(tmp_path):
+    """Without TEAM_RECORDER_APP, bridge is always skipped (Terminal / make run path)."""
+    import json
+    f = tmp_path / "events-today.json"
+    today = datetime.now().strftime("%Y-%m-%d")
+    f.write_text(json.dumps({"date": today, "events": []}), encoding="utf-8")
+    # TEAM_RECORDER_APP must NOT be set in test environment
+    import os as _os
+    _os.environ.pop("TEAM_RECORDER_APP", None)
+    result = v2._read_events_bridge(str(f))
+    assert result is None, "bridge must be skipped when TEAM_RECORDER_APP is absent"
+
+
+def test_read_events_bridge_absent_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    result = v2._read_events_bridge(str(tmp_path / "events-today.json"))
+    assert result is None
+
+
+def test_read_events_bridge_not_authorized_returns_no_access(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    f = tmp_path / "events-today.json"
+    today = datetime.now().strftime("%Y-%m-%d")
+    f.write_text(json.dumps({"date": today, "authorized": False}), encoding="utf-8")
+    result = v2._read_events_bridge(str(f))
+    assert result == (v2.CAL_NO_ACCESS, [])
+
+
+def test_read_events_bridge_stale_date_returns_none(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    f = tmp_path / "events-today.json"
+    f.write_text(json.dumps({"date": "2000-01-01", "events": []}), encoding="utf-8")
+    result = v2._read_events_bridge(str(f))
+    assert result is None
+
+
+def test_read_events_bridge_parses_events(monkeypatch, tmp_path):
+    import json
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    f = tmp_path / "events-today.json"
+    today = datetime.now().strftime("%Y-%m-%d")
+    f.write_text(json.dumps({
+        "date": today,
+        "events": [
+            {"title": "Sprint Planning", "start": "10:00", "end": "11:00"},
+            {"title": "Design Sync",     "start": "14:00"},
+        ],
+    }), encoding="utf-8")
+    result = v2._read_events_bridge(str(f))
+    assert result is not None
+    status, meetings = result
+    assert status == v2.CAL_FROM_APP
+    assert len(meetings) == 2
+    assert meetings[0]["name"] == "Sprint Planning"
+    assert meetings[0]["end"] is not None
+    assert meetings[1]["name"] == "Design Sync"
+    assert meetings[1]["end"] is None
+
+
+def test_read_events_bridge_result_cached(monkeypatch, tmp_path):
+    """CAL_FROM_APP is in _CAL_CACHEABLE — bridge result must be cached like ok_events."""
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(v2.os.path, "getmtime", lambda _: 100.0)
+
+    calls = []
+
+    def fake_get():
+        calls.append(1)
+        return (v2.CAL_FROM_APP, [])
+
+    monkeypatch.setattr(v2, "get_today_meetings", fake_get)
+    v2._meetings_cache["date"]   = None
+    v2._meetings_cache["status"] = None
+
+    v2._get_today_meetings_cached()
+    v2._get_today_meetings_cached()
+    assert len(calls) == 1, "CAL_FROM_APP result must be cached"
+    assert v2.fallback_reason_for(None)                     == "calendar lookup unavailable"
+
+
+def test_meetings_cache_invalidated_when_bridge_mtime_changes(monkeypatch, tmp_path):
+    """When bridge file mtime advances, CAL_FROM_APP cache must be bypassed."""
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    fake_mtime = [100.0]
+    monkeypatch.setattr(v2.os.path, "getmtime", lambda _: fake_mtime[0])
+
+    calls = []
+
+    def fake_get():
+        calls.append(1)
+        return (v2.CAL_FROM_APP, [])
+
+    monkeypatch.setattr(v2, "get_today_meetings", fake_get)
+
+    v2._meetings_cache["date"]         = datetime.now().strftime("%Y-%m-%d")
+    v2._meetings_cache["ts"]           = time.time()
+    v2._meetings_cache["status"]       = v2.CAL_FROM_APP
+    v2._meetings_cache["meetings"]     = []
+    v2._meetings_cache["bridge_mtime"] = 100.0
+
+    v2._get_today_meetings_cached()
+    assert len(calls) == 0, "unchanged mtime must hit cache"
+
+    fake_mtime[0] = 200.0
+    v2._get_today_meetings_cached()
+    assert len(calls) == 1, "newer bridge mtime must invalidate cache"
+
+
+def test_stop_recording_retries_calendar_when_unmatched(monkeypatch, tmp_path):
+    """When meeting_name is None at stop time, retry with fresh bridge data."""
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(v2.os.path, "getmtime", lambda _: time.time())
+
+    start_time = datetime.now() - timedelta(seconds=300)
+    meeting = {"start": start_time - timedelta(minutes=1),
+               "end":   start_time + timedelta(minutes=59),
+               "name":  "Sprint Review"}
+
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_FROM_APP, [meeting]))
+    v2._meetings_cache["date"] = None
+
+    renamed_sessions = []
+    monkeypatch.setattr(v2, "rename_recording", lambda s, d: renamed_sessions.append(dict(s)))
+    monkeypatch.setattr(v2, "validate_recording", lambda p: (True, ""))
+
+    proc = _make_proc(stdout_lines=["STOPPED_OK"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+
+    session = {
+        "start_time":      start_time,
+        "recording_path":  str(tmp_path / "rec.m4a"),
+        "recording_dir":   str(tmp_path),
+        "meeting_name":    None,
+        "calendar_status": v2.CAL_FROM_APP,
+    }
+    v2.stop_recording_v2(proc, session)
+
+    assert len(renamed_sessions) == 1
+    assert renamed_sessions[0]["meeting_name"] == "Sprint Review", (
+        "retry at stop should populate meeting_name from fresh bridge data"
+    )

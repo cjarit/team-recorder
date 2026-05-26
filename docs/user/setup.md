@@ -56,7 +56,7 @@ The app shows a Setup Guide on first launch:
 
 1. **Screen Recording** — click "Add Team Recorder to Screen Recording", enable the toggle in System Settings, then click "Relaunch App"
 2. **Microphone** — click "Grant Access" and allow in the popup
-3. **Calendar Access** — click "Grant Access" and choose **Full Access** (not Write Only). macOS may ask again for `icalBuddy`; allow it during Setup because this helper reads Calendar when naming recordings.
+3. **Calendar Access** — click "Grant Access" and choose **Full Access** (not Write Only). The app will show "Calendar bridge ready" — this writes today's events to a shared file the watcher reads directly, with no extra prompts.
 4. Click **Finish** — the recorder starts automatically
 
 Screen Recording is applied by macOS only after relaunch. The app will not start the watcher from Setup until this relaunch path is complete.
@@ -67,5 +67,4 @@ Screen Recording is applied by macOS only after relaunch. The app will not start
 |------------|----------------|------------|
 | Screen Recording | System Settings → Privacy & Security → Screen Recording | Captures system audio from Teams |
 | Microphone | System Settings → Privacy & Security → Microphone | Records your voice |
-| Calendar | System Settings → Privacy & Security → Calendars | Names recordings after meeting title |
-| Calendar for `icalBuddy` | Prompt shown during Setup | Lets the watcher read meeting titles before the first live recording |
+| Calendar | System Settings → Privacy & Security → Calendars | Names recordings after meeting title (app writes bridge file; watcher reads it) |

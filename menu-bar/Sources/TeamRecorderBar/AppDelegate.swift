@@ -71,6 +71,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             SetupWindowController.shared.show()
             return
         }
+        CalendarEventBridge.shared.writeEventsIfAuthorized()
+        CalendarEventBridge.shared.startObserving()
         WatcherManager.shared.autoStartIfNeeded()
     }
 

@@ -99,9 +99,8 @@ struct PermissionChecker {
         }
     }
 
-    /// Trigger the icalBuddy Calendar permission during setup.
-    /// The Python watcher reads Calendar through icalBuddy, so the menu-bar app's
-    /// own EventKit grant is not enough to prevent a second prompt in a meeting.
+    /// Probe icalBuddy Calendar access (Terminal / make run path only).
+    /// Under TeamRecorderBar, CalendarEventBridge handles calendar via EKEventStore instead.
     static func primeIcalBuddyCalendar(projectDirectory: URL?,
                                        completion: @escaping (Bool, String) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
@@ -109,14 +108,11 @@ struct PermissionChecker {
                 DispatchQueue.main.async { completion(false, "icalBuddy not found") }
                 return
             }
-            // One retry: if the first attempt fails with an ambiguous (non-permission) error,
-            // wait briefly and try once more — handles transient TCC daemon delays.
             runIcalBuddyProbe(binary: binary, projectDirectory: projectDirectory) { ok, detail, explicitlyDenied in
                 if ok || explicitlyDenied {
                     DispatchQueue.main.async { completion(ok, detail) }
                     return
                 }
-                // Ambiguous result — retry once after a short pause
                 Thread.sleep(forTimeInterval: 0.5)
                 runIcalBuddyProbe(binary: binary, projectDirectory: projectDirectory) { ok2, detail2, _ in
                     DispatchQueue.main.async { completion(ok2, detail2) }

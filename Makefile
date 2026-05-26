@@ -107,7 +107,7 @@ uninstall:
 	@echo "    Privacy & Security → Screen Recording  → TeamRecorderBar → click −"
 	@echo "    Privacy & Security → Microphone         → TeamRecorderBar → toggle off"
 	@echo "    Privacy & Security → Calendars          → TeamRecorderBar → None"
-	@echo "    Privacy & Security → Automation         → icalBuddy → toggle off"
+	@echo "    Privacy & Security → Automation         → icalBuddy → toggle off (if listed)"
 	@echo ""
 	@echo "  To reinstall: make menu-bar-install"
 
