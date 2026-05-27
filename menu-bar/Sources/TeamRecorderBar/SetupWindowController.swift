@@ -109,12 +109,22 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: — Public API
 
-    /// Present the setup window. Brings to front if already visible.
+    /// Present the setup window. Runs environment preflight first; blocks on failure.
     func show() {
         guard let win = window else { return }
         if win.isVisible {
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        if let errorMessage = runEnvironmentPreflight() {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText     = "Team Recorder — Setup cannot continue"
+            alert.informativeText = errorMessage
+            alert.alertStyle      = .critical
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
             return
         }
         currentStep = 0
@@ -126,6 +136,48 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Returns a user-visible error string if any preflight check fails, nil if all pass.
+    private func runEnvironmentPreflight() -> String? {
+        let fm = FileManager.default
+
+        // 1. watcher.pyz present in bundle
+        guard WatcherManager.shared.watcherURL != nil else {
+            return "App bundle is corrupted — re-download from GitHub Releases.\n\n(Missing: watcher.pyz)"
+        }
+
+        // 2. recorder binary present and executable in bundle
+        guard let recorderURL = Bundle.main.url(forResource: "recorder", withExtension: nil),
+              fm.isExecutableFile(atPath: recorderURL.path) else {
+            return "App bundle is corrupted — re-download from GitHub Releases.\n\n(Missing or not executable: recorder)"
+        }
+
+        // 3. /usr/bin/python3 present and >= 3.9
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        guard fm.isExecutableFile(atPath: python.path) else {
+            return "Python 3.9+ is required but /usr/bin/python3 was not found.\n\nInstall Xcode Command Line Tools:\n  xcode-select --install"
+        }
+        let ver = Process()
+        ver.executableURL = python
+        ver.arguments = ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"]
+        let pipe = Pipe()
+        ver.standardOutput = pipe
+        ver.standardError  = FileHandle.nullDevice
+        guard (try? ver.run()) != nil else {
+            return "Could not run /usr/bin/python3 to check version.\n\nInstall Xcode Command Line Tools:\n  xcode-select --install"
+        }
+        ver.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let parts = output.split(separator: ".").compactMap { Int($0) }
+        let major = parts.count > 0 ? parts[0] : 0
+        let minor = parts.count > 1 ? parts[1] : 0
+        guard major > 3 || (major == 3 && minor >= 9) else {
+            return "Python 3.9+ is required (found \(output)).\n\nInstall Xcode Command Line Tools:\n  xcode-select --install"
+        }
+
+        return nil
     }
 
     // MARK: — Exit helper (single path for all completion/skip routes)

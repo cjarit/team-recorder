@@ -3,23 +3,20 @@ import Foundation
 
 /// Reason the watcher failed to start. Read by StatusBarController to show user-visible details.
 enum LaunchError {
-    case missingWatcherPathFile
-    case watcherScriptNotFound(URL)
+    case watcherNotFound
     case pythonNotFound
-    case pinnedPythonNotFound(URL)
+    case pythonTooOld
     case earlyExit(code: Int32, stderr: String)
     case launchFailed(String)
 
     var userDescription: String {
         switch self {
-        case .missingWatcherPathFile:
-            return "watcher_path.txt not found in the app bundle.\nRun `make menu-bar-install` from the project folder."
-        case .watcherScriptNotFound(let url):
-            return "teams_recorder_v2.py not found at:\n\(url.path)\n\nRun `make menu-bar-install` from the correct project folder."
+        case .watcherNotFound:
+            return "watcher.pyz not found in the app bundle.\nRe-download TeamRecorderBar.app from GitHub Releases."
         case .pythonNotFound:
-            return "python3 not found. Install Python 3 via Homebrew:\n  brew install python"
-        case .pinnedPythonNotFound(let url):
-            return "Python pinned at:\n\(url.path)\nis missing or not executable.\nRun `make menu-bar-install` from the project folder."
+            return "Python 3.9+ required.\nInstall Xcode Command Line Tools:\n  xcode-select --install"
+        case .pythonTooOld:
+            return "Python 3.9 or later required (found older version).\nInstall Xcode Command Line Tools:\n  xcode-select --install"
         case .earlyExit(let code, let stderr):
             let detail = stderr.isEmpty ? "(no output)" : stderr.prefix(400).description
             return "Watcher crashed immediately (exit \(code)):\n\(detail)"
@@ -34,15 +31,22 @@ enum LaunchError {
 class WatcherManager {
     static let shared = WatcherManager()
 
-    /// Absolute path to teams_recorder_v2.py, read from watcher_path.txt in the app bundle.
-    private(set) var watcherURL: URL?
+    /// watcher.pyz bundled inside the .app. nil when the bundle is missing/corrupted.
+    var watcherURL: URL? {
+        Bundle.main.url(forResource: "watcher", withExtension: "pyz")
+    }
 
-    /// Absolute path to the Python interpreter setup.sh installed deps into.
-    /// Read from python_path.txt in the app bundle. nil → fall back to /usr/bin/env python3.
-    private(set) var pythonURL: URL?
+    /// No project directory in the portable .app — kept for API compatibility (always nil).
+    var projectDirectory: URL? { nil }
 
-    var projectDirectory: URL? {
-        watcherURL?.deletingLastPathComponent()
+    private static let systemPython = URL(fileURLWithPath: "/usr/bin/python3")
+
+    private static var appSupportEnvFileURL: URL {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
+        return support.appendingPathComponent("Team Recorder/.env")
     }
 
     /// Process started by *this* app instance (nil if watcher was launched externally).
@@ -52,25 +56,7 @@ class WatcherManager {
     /// Read by StatusBarController to show a user-visible error indicator.
     private(set) var lastLaunchError: LaunchError?
 
-    private init() {
-        // watcher_path.txt is written into Resources/ by `make menu-bar`
-        if let url = Bundle.main.url(forResource: "watcher_path", withExtension: "txt"),
-           let content = try? String(contentsOf: url, encoding: .utf8) {
-            let path = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !path.isEmpty {
-                watcherURL = URL(fileURLWithPath: path)
-            }
-        }
-        // python_path.txt pins the interpreter setup.sh installed python-dotenv into,
-        // because Launch Services' PATH resolves `env python3` to system Python 3.9 (no dotenv).
-        if let url = Bundle.main.url(forResource: "python_path", withExtension: "txt"),
-           let content = try? String(contentsOf: url, encoding: .utf8) {
-            let path = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !path.isEmpty {
-                pythonURL = URL(fileURLWithPath: path)
-            }
-        }
-    }
+    private init() {}
 
     // MARK: — State
 
@@ -88,19 +74,25 @@ class WatcherManager {
         managedProcess?.isRunning == true
     }
 
-    /// Fallback: run `pgrep -f teams_recorder_v2.py` and return the first matching PID.
+    /// Fallback: pgrep for watcher.pyz (app mode) then teams_recorder_v2.py (make run / Terminal).
     /// Returns nil if not found or pgrep fails. Mirrors Python's `_pgrep_watcher_pids()`.
     private func pgrepWatcherPid() -> pid_t? {
+        for pattern in ["watcher.pyz", "teams_recorder_v2.py"] {
+            if let pid = pgrepFirst(pattern: pattern) { return pid }
+        }
+        return nil
+    }
+
+    private func pgrepFirst(pattern: String) -> pid_t? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-f", "teams_recorder_v2.py"]
+        p.arguments = ["-f", pattern]
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError  = FileHandle.nullDevice
         guard (try? p.run()) != nil else { return nil }
         p.waitUntilExit()
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        // Return the first valid PID found
         return out.split(separator: "\n")
             .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
             .first
@@ -114,52 +106,35 @@ class WatcherManager {
     func start() {
         lastLaunchError = nil  // clear any previous error before attempting
 
-        guard let url = watcherURL else {
-            NSLog("[TeamRecorderBar] watcher_path.txt not found in bundle — run `make menu-bar` again")
-            lastLaunchError = .missingWatcherPathFile
+        guard let watcherURL else {
+            NSLog("[TeamRecorderBar] watcher.pyz not found in bundle")
+            lastLaunchError = .watcherNotFound
             NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
             return
         }
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            NSLog("[TeamRecorderBar] teams_recorder_v2.py not found at: \(url.path)")
-            lastLaunchError = .watcherScriptNotFound(url)
+        let python = WatcherManager.systemPython
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            NSLog("[TeamRecorderBar] /usr/bin/python3 not found or not executable")
+            lastLaunchError = .pythonNotFound
             NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
             return
         }
         guard !isRunning else { return }
 
-        // Preflight: prefer the pinned interpreter (python_path.txt) so we use the same
-        // Python that setup.sh installed python-dotenv into. Fall back to env python3.
+        let recorderURL = Bundle.main.url(forResource: "recorder", withExtension: nil)
+        let envFileURL  = WatcherManager.appSupportEnvFileURL
+
         let p = Process()
-        if let py = pythonURL {
-            guard FileManager.default.isExecutableFile(atPath: py.path) else {
-                NSLog("[TeamRecorderBar] pinned python not executable at \(py.path)")
-                lastLaunchError = .pinnedPythonNotFound(py)
-                NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
-                return
-            }
-            p.executableURL = py
-            p.arguments = [url.path]
-        } else {
-            let which = Process()
-            which.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-            which.arguments = ["python3"]
-            which.standardOutput = FileHandle.nullDevice
-            which.standardError  = FileHandle.nullDevice
-            if (try? which.run()) != nil { which.waitUntilExit() }
-            if which.terminationStatus != 0 {
-                NSLog("[TeamRecorderBar] python3 not found — watcher cannot start")
-                lastLaunchError = .pythonNotFound
-                NotificationCenter.default.post(name: .watcherStateChanged, object: nil)
-                return
-            }
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            p.arguments = ["python3", url.path]
+        p.executableURL = python
+        p.arguments     = [watcherURL.path]
+        var env = ProcessInfo.processInfo.environment
+        env["NOTIFY"]              = "0"
+        env["TEAM_RECORDER_APP"]   = "1"
+        env["ENV_FILE"]            = envFileURL.path
+        if let recURL = recorderURL {
+            env["RECORDER_BIN"]    = recURL.path
         }
-        // Run from the project directory so relative .env lookup works
-        p.currentDirectoryURL = url.deletingLastPathComponent()
-        p.environment = ProcessInfo.processInfo.environment.merging(
-            ["NOTIFY": "0", "TEAM_RECORDER_APP": "1"]) { $1 }
+        p.environment = env
         p.standardOutput = FileHandle.nullDevice
 
         // Capture stderr into a pipe so early crashes produce user-visible detail
@@ -276,15 +251,11 @@ class WatcherManager {
 
     // MARK: — Change recordings folder
 
-    /// Update RECORDING_DIR in the project .env file and restart the watcher.
+    /// Update RECORDING_DIR in the App Support .env file and restart the watcher.
     /// Writes atomically; preserves all other .env lines.
     func setRecordingDir(_ url: URL) {
-        guard let watcherURL else {
-            NSLog("[TeamRecorderBar] setRecordingDir: watcherURL not set")
-            return
-        }
-        let envFile = watcherURL.deletingLastPathComponent().appendingPathComponent(".env")
-        let tmpFile = watcherURL.deletingLastPathComponent().appendingPathComponent(".env.tmp")
+        let envFile = WatcherManager.appSupportEnvFileURL
+        let tmpFile = envFile.deletingLastPathComponent().appendingPathComponent(".env.tmp")
 
         // Read existing lines (ok if file is absent)
         var lines = (try? String(contentsOf: envFile, encoding: .utf8))?
@@ -326,20 +297,18 @@ class WatcherManager {
 
     // MARK: — Recording directory (for "Open Recordings Folder")
 
-    /// Best-effort: parse RECORDING_DIR from the project .env file,
+    /// Best-effort: parse RECORDING_DIR from the App Support .env file,
     /// fall back to the default path.
     func recordingDirectory() -> URL {
-        if let watcherURL {
-            let envFile = watcherURL.deletingLastPathComponent().appendingPathComponent(".env")
-            if let content = try? String(contentsOf: envFile, encoding: .utf8) {
-                for line in content.components(separatedBy: .newlines) {
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("RECORDING_DIR=") {
-                        let value = String(trimmed.dropFirst("RECORDING_DIR=".count))
-                            .trimmingCharacters(in: .whitespaces)
-                        if !value.isEmpty && !value.hasPrefix("#") {
-                            return URL(fileURLWithPath: NSString(string: value).expandingTildeInPath)
-                        }
+        let envFile = WatcherManager.appSupportEnvFileURL
+        if let content = try? String(contentsOf: envFile, encoding: .utf8) {
+            for line in content.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("RECORDING_DIR=") {
+                    let value = String(trimmed.dropFirst("RECORDING_DIR=".count))
+                        .trimmingCharacters(in: .whitespaces)
+                    if !value.isEmpty && !value.hasPrefix("#") {
+                        return URL(fileURLWithPath: NSString(string: value).expandingTildeInPath)
                     }
                 }
             }
@@ -384,7 +353,8 @@ class WatcherManager {
             removeStaleFile(WatcherManager.pidFileURL)
             return nil
         }
-        guard processCommand(pid: p).contains("teams_recorder_v2.py") else {
+        let cmd = processCommand(pid: p)
+        guard cmd.contains("teams_recorder_v2.py") || cmd.contains("watcher.pyz") else {
             removeStaleFile(WatcherManager.pidFileURL)
             return nil
         }

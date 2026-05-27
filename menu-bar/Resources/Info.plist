@@ -22,7 +22,7 @@
     <key>CFBundleShortVersionString</key>
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>14.0</string>
     <key>NSHumanReadableCopyright</key>
     <string>Team Recorder</string>
     <!-- Usage strings ที่ macOS ต้องการก่อนแสดง permission dialog -->

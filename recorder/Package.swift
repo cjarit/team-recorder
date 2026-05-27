@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "recorder",
     platforms: [
-        .macOS(.v13)   // ScreenCaptureKit audio requires macOS 13+
+        .macOS(.v14)   // macOS 14+ Sonoma — minimum supported OS for public release
     ],
     targets: [
         .executableTarget(

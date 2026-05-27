@@ -1,25 +1,45 @@
 # Teams Auto-Recorder
 
-บันทึกเสียง Microsoft Teams meeting อัตโนมัติ
+บันทึกเสียง Microsoft Teams meeting อัตโนมัติ — ไม่ต้องกด Record เอง
 
-เมื่อเข้า Teams call → เริ่มอัดเอง  
+เมื่อเข้า Teams call → เริ่มอัดเอง<br>
 เมื่อออกจาก call → หยุดอัด ตั้งชื่อไฟล์ตาม calendar อัตโนมัติ
 
 ---
 
 ## Requirements
 
-- macOS 13 (Ventura) ขึ้นไป
-- Python 3.11+
-- [icalBuddy](https://hasseg.org/icalBuddy/) (`brew install ical-buddy`)
-- สิทธิ์ **Screen Recording / Microphone / Calendar** ให้ **Team Recorder** (Setup Guide จะแนะนำทีละขั้นตอน)
+- macOS 14 (Sonoma) ขึ้นไป
+- สิทธิ์ **Screen Recording / Microphone / Calendar** — Setup Guide จะแนะนำทีละขั้นตอน
+- **Architecture:** release build เป็น arm64 (Apple Silicon) หรือ x86_64 (Intel) ตาม build machine — ดาวน์โหลดให้ตรง arch ของเครื่อง
 
 ---
 
-## Installation
+## การติดตั้ง
 
-> **ยังไม่มี installer พร้อมแชร์ให้ทีม** — ปัจจุบันติดตั้งได้โดย clone repo เท่านั้น
-> ดู [packaging/README.md](packaging/README.md) สำหรับ roadmap และเหตุผล
+### วิธีที่ 1 — ดาวน์โหลด .app จาก GitHub Releases (แนะนำ)
+
+> ไม่ต้องใช้ Terminal ไม่ต้อง Homebrew
+
+1. ดาวน์โหลด **TeamRecorderBar-v1.0.0.zip** จาก [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
+2. แตกไฟล์ zip แล้ว **ลาก `TeamRecorderBar.app` ไปไว้ที่ `/Applications/`**
+3. เปิดครั้งแรก — **คลิกขวา → Open** (ไม่ใช่ดับเบิลคลิก)
+
+   ![Gatekeeper bypass — right-click Open dialog](docs/user/images/gatekeeper-bypass.png)
+
+   > **ทำไมต้องคลิกขวา?** macOS จะแสดงคำเตือน "ไม่รู้จักผู้พัฒนา" เพราะแอปนี้ไม่ได้ผ่าน Apple notarization<br>
+   > คลิกขวา → Open → Open จะข้ามการตรวจสอบนี้ ทำครั้งเดียว<br>
+   > ครั้งต่อไปดับเบิลคลิกได้ตามปกติ
+
+4. **Setup Guide** จะขึ้นอัตโนมัติ — ให้สิทธิ์ทั้ง 3 ขั้นตอน แล้วกด Finish
+
+แอปพร้อมใช้งาน — มองหา icon ที่ **menu bar มุมขวาบนของจอ**
+
+---
+
+### วิธีที่ 2 — สำหรับ Developer (clone + build)
+
+> ต้องการ Terminal + Homebrew
 
 ```bash
 git clone https://github.com/cjarit/team-recorder
@@ -28,10 +48,7 @@ make setup
 make menu-bar-install
 ```
 
-> แอปจะเปิดอัตโนมัติ — มองหา icon ที่ **menu bar มุมขวาบนของจอ** (ไม่มี Dock icon)
-> ถ้า Setup Guide ไม่ขึ้น ให้รัน `make reset-setup` แล้วเปิดแอปใหม่
-
-แอปอยู่ที่: `/Applications/TeamRecorderBar.app`
+> ถ้า Setup Guide ไม่ขึ้น รัน: `make reset-setup` แล้วเปิดแอปใหม่
 
 ---
 
@@ -40,6 +57,8 @@ make menu-bar-install
 1. เปิด **Team Recorder** จาก `/Applications/` (หรือเปิดอัตโนมัติถ้าเปิด Launch at Login)
 2. เข้า Teams meeting — การบันทึกเริ่มอัตโนมัติ
 3. ออกจาก meeting — ไฟล์จะถูกตั้งชื่อตาม calendar event และบันทึกที่ `~/Documents/Teams Recording/`
+
+ดูรายละเอียดเพิ่มเติม: [docs/user/daily-use.md](docs/user/daily-use.md)
 
 ---
 
@@ -67,24 +86,24 @@ make menu-bar-install
 | Setup Guide… | เปิดหน้าต่าง setup step-by-step อีกครั้ง |
 | Launch at Login | เปิด/ปิดการเริ่มต้นอัตโนมัติเมื่อ login |
 
-**Change Folder…** จะอัปเดต `RECORDING_DIR` ใน `.env` แล้ว restart watcher อัตโนมัติ
+**Change Folder…** จะอัปเดต `RECORDING_DIR` ใน `.env` แล้ว restart watcher อัตโนมัติ<br>
 (ปุ่มนี้จะ disable ขณะกำลังบันทึก)
 
-**Setup Guide** — เปิดขึ้นอัตโนมัติครั้งแรกที่รันแอป แนะนำการให้สิทธิ์ทีละขั้นตอน:
-Screen Recording → Microphone → Calendar
+**Setup Guide** — เปิดขึ้นอัตโนมัติครั้งแรกที่รันแอป แนะนำการให้สิทธิ์ทีละขั้นตอน:<br>
+Screen Recording → Microphone → Calendar<br>
 เมื่อกด Finish แอปจะเริ่ม watcher ให้เลย
 
-Screen Recording ต้อง relaunch แอปหลังเปิดสิทธิ์ตามข้อกำหนดของ macOS.
-หลังกด Finish แอปจะเขียน calendar events ลงไฟล์ `events-today.json` ใน Application Support และ watcher อ่านจากไฟล์นั้น — ไม่มี prompt เพิ่มเติม
+Screen Recording ต้อง relaunch แอปหลังเปิดสิทธิ์ตามข้อกำหนดของ macOS
 
-**Launch at Login** — ต้องติดตั้งแอปไว้ที่ `/Applications/` ก่อน (ใช้ `make menu-bar-install`)
+**Launch at Login** — ต้องติดตั้งแอปไว้ที่ `/Applications/` ก่อน (`make menu-bar-install` สำหรับ developer)<br>
 ถ้ากดแล้วไม่ work จะมี alert แจ้ง
 
 ---
 
 ## Output
 
-ไฟล์บันทึกจะอยู่ที่ `~/Documents/Teams Recording/` (แก้ได้จาก menu bar → 📁 Recordings Folder → Change Folder… หรือใน `.env`)
+ไฟล์บันทึกจะอยู่ที่ `~/Documents/Teams Recording/`<br>
+(แก้ได้จาก menu bar → 📁 Recordings Folder → Change Folder…)
 
 ชื่อไฟล์ตัวอย่าง:
 ```
@@ -97,26 +116,27 @@ Teams Call (Short) - 09-15_21-05-2026.m4a   ← call < 3 นาที
 
 ---
 
-## Configuration (`.env`)
+## Configuration
 
-> ไฟล์ `.env` อยู่ในโฟลเดอร์โปรเจกต์นี้ (สร้างโดย `make setup`)
+> **สำหรับผู้ใช้ทั่วไป:** แก้โฟลเดอร์บันทึกได้จาก menu bar → 📁 Recordings Folder → Change Folder… ไม่ต้องแก้ไฟล์โดยตรง
 
+ไฟล์ config (`~/Library/Application Support/Team Recorder/.env`) สร้างอัตโนมัติตอน setup
 
 ```bash
 RECORDING_DIR=~/Documents/Teams Recording   # โฟลเดอร์บันทึก
-ICAL_BUDDY_PATH=                             # path ถ้า icalBuddy ไม่อยู่ใน PATH
+ICAL_BUDDY_PATH=                             # path ถ้า icalBuddy ไม่อยู่ใน PATH (developer path เท่านั้น)
 RECORDER_BIN=                                # override path ของ binary (ปกติไม่ต้องกำหนด)
 AUDIO_INPUT_DEVICE_UID=                      # UID ของ mic พิเศษ (headset, external mic)
 ```
 
-ดู UID ของ mic ทั้งหมด:
+ดู UID ของ mic ทั้งหมด (สำหรับ developer):
 ```bash
 recorder/recorder --list-devices
 ```
 
 ---
 
-## Commands
+## Commands (Developer)
 
 | Command | Description |
 |---------|-------------|
@@ -128,42 +148,13 @@ recorder/recorder --list-devices
 | `make index` | สร้าง `index.html` รวมรายการ recording ทั้งหมด |
 | `make test` | รัน unit tests |
 | `make build-recorder` | rebuild Swift binary (ต้องมี Xcode CLT) |
-| `make menu-bar` | build menu bar app → `menu-bar/.build/TeamRecorderBar.app` (ครั้งแรก หรือย้าย repo) |
+| `make menu-bar` | build menu bar app → `menu-bar/.build/TeamRecorderBar.app` |
 | `make menu-bar-install` | build + copy ไปที่ `/Applications/TeamRecorderBar.app` |
+| `make release` | สร้าง `dist/TeamRecorderBar-v1.0.0.zip` พร้อม SHA256 (สำหรับ GitHub Release) |
 | `make uninstall` | ถอนการติดตั้ง: หยุด watcher, ลบ app, ล้าง preferences + runtime state |
 | `make clean-reinstall` | uninstall แล้ว menu-bar-install ใหม่ในขั้นตอนเดียว |
-| `make dist` | สร้าง `dist/TeamRecorder.zip` — สำหรับเครื่อง developer เท่านั้น (ดู [packaging/README.md](packaging/README.md)) |
 
-**Log & status:** บันทึก log รายวันที่ `~/Library/Logs/Team Recorder/` และเขียน
-สถานะปัจจุบัน (`status.json`) รวมถึง PID watcher/recorder ที่
-`~/Library/Application Support/Team Recorder/`
-
-### วิธีใช้ Terminal (ไม่ผ่าน menu bar)
-
-```bash
-# วิธีนี้ใช้ Terminal โดยตรง — ต้องให้สิทธิ์ Screen Recording แก่ Terminal
-# (ถ้าใช้ Team Recorder ไม่ต้องทำขั้นตอนนี้)
-# System Settings → Privacy & Security → Screen Recording → Terminal ✓
-
-make run
-```
-
-> **หมายเหตุ:** ถ้าย้ายโฟลเดอร์โปรเจกต์ ให้รัน `make menu-bar` หรือ `make menu-bar-install` อีกครั้งเพื่ออัปเดต path
-
----
-
-## Rebuild Swift Binary
-
-Binary (`recorder/recorder`) committed ไว้ใน repo แล้ว — ปกติไม่ต้อง build ใหม่
-
-ต้อง rebuild เมื่อ: แก้ Swift source หรือ binary ไม่รันบนเครื่องนี้ (wrong arch)
-
-```bash
-# ต้องการ Xcode Command Line Tools
-xcode-select --install   # ถ้ายังไม่ได้ติดตั้ง
-
-make build-recorder
-```
+**Log & status:** บันทึก log รายวันที่ `~/Library/Logs/Team Recorder/` และเขียนสถานะปัจจุบัน (`status.json`) รวมถึง PID watcher/recorder ที่ `~/Library/Application Support/Team Recorder/`
 
 ---
 
@@ -174,7 +165,7 @@ Teams meeting detected (UDP connections ≥ 4)
     ↓
 Swift binary (recorder) เริ่มอัด system audio + mic ผ่าน ScreenCaptureKit
     ↓
-ดึงชื่อ meeting จาก Apple Calendar ผ่าน icalBuddy
+ดึงชื่อ meeting จาก Apple Calendar ผ่าน CalendarEventBridge
     ↓
 [meeting in progress...]
     ↓
@@ -187,12 +178,19 @@ UDP drops → รอ 8s ยืนยัน (ป้องกัน false stop)
 
 ## Uninstall
 
+**สำหรับผู้ใช้ทั่วไป (ไม่มี Terminal):**
+
+1. คลิก menu bar icon → **Quit**
+2. ลาก `/Applications/TeamRecorderBar.app` ไปถังขยะ
+3. ยกเลิกสิทธิ์ใน System Settings (ดูตารางด้านล่าง)
+
+**สำหรับ developer (ใช้ make):**
+
 ```bash
-cd team-recorder
 make uninstall
 ```
 
-ลบ: app, preferences, runtime state (`status.json`, PID files)  
+ลบ: app, preferences, runtime state (`status.json`, PID files)<br>
 **ไม่ลบ:** ไฟล์บันทึกใน `~/Documents/Teams Recording/`
 
 หลัง uninstall ให้ยกเลิกสิทธิ์ใน System Settings ด้วยตัวเอง (macOS ไม่อนุญาตให้ทำโดย API):
@@ -203,12 +201,6 @@ make uninstall
 | Microphone | System Settings → Privacy & Security → Microphone → TeamRecorderBar → toggle off |
 | Calendar | System Settings → Privacy & Security → Calendars → TeamRecorderBar → **None** |
 
-**ติดตั้งใหม่หลัง uninstall:**
-
-```bash
-make clean-reinstall   # uninstall + ติดตั้งใหม่ในขั้นตอนเดียว
-```
-
 ---
 
 ## Troubleshooting
@@ -216,10 +208,12 @@ make clean-reinstall   # uninstall + ติดตั้งใหม่ในข�
 | ปัญหา | วิธีแก้ |
 |-------|---------|
 | ไม่เริ่มอัด | เปิด Setup Guide… → Step 1 Screen Recording → ให้สิทธิ์แล้ว Relaunch App |
-| Setup Guide ไม่ขึ้น | คลิก menu bar icon → Setup Guide… หรือรัน `make reset-setup` แล้วเปิดแอปใหม่ |
-| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder หรือ `icalBuddy` ยังไม่ได้รับสิทธิ์ Calendar → เปิด Setup Guide… แล้วให้สิทธิ์ Calendar / Full Access |
+| Setup Guide ไม่ขึ้น | คลิก menu bar icon → Setup Guide… |
+| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder ยังไม่ได้รับสิทธิ์ Calendar → เปิด Setup Guide… แล้วให้สิทธิ์ Calendar / Full Access |
 | icon แดงค้าง / Stop แล้วนิ่ง | คลิก menu bar icon → Recover Recorder… แล้วเริ่ม watcher ใหม่ |
-| `recorder binary เป็น arch ผิด` | รัน `make build-recorder` แล้ว commit `recorder/recorder` |
-| เสียงไม่มี mic | ตรวจสอบ `AUDIO_INPUT_DEVICE_UID` ใน `.env` หรือลองใช้ default |
+| macOS แจ้งเตือน "ไม่รู้จักผู้พัฒนา" | คลิกขวา → Open → Open (ทำครั้งเดียว) |
+| Setup แจ้ง "App bundle is corrupted" | ลบแอปแล้ว re-download จาก GitHub Releases อีกครั้ง |
+| Setup แจ้ง "Python 3.9+ required" | เปิด Terminal แล้วรัน `xcode-select --install` |
 
-ดูรายละเอียดเพิ่มเติม: [docs/user/troubleshooting.md](docs/user/troubleshooting.md)
+ดูรายละเอียดเพิ่มเติม: [docs/user/troubleshooting.md](docs/user/troubleshooting.md)<br>
+คำถามที่พบบ่อย: [docs/user/faq.md](docs/user/faq.md)

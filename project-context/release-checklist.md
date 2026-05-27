@@ -9,10 +9,10 @@
 
 ## Build & test
 
-- [ ] `make test` — 78 passed, 3 skipped (baseline)
+- [ ] `make test` — 93 passed, 3 skipped (baseline)
 - [ ] `make menu-bar` — clean build, zero warnings
 - [ ] `make doctor` — no errors on a clean machine
-- [ ] `make dist` — `dist/TeamRecorder.zip` created; LOCAL MACHINE ONLY warning shown
+- [ ] `make release` — `dist/TeamRecorderBar-v*.zip` created; SHA256 emitted
 
 ## Setup flow verification
 
@@ -27,4 +27,4 @@
 ## After release
 
 - [ ] Tag commit: `git tag vX.Y`
-- [ ] Archive phase plan to `docs/plans/`
+- [ ] Archive phase plan to `plan/archive/`

@@ -1,8 +1,11 @@
-PYTHON      := python3
+BREW_PYTHON := $(shell /opt/homebrew/bin/brew --prefix python 2>/dev/null)/bin/python3
+PYTHON      := $(if $(wildcard $(BREW_PYTHON)),$(BREW_PYTHON),python3)
 MENU_BAR_APP = menu-bar/.build/TeamRecorderBar.app
 DIST_DIR     = dist
+VERSION      = 1.0.0
+RELEASE_ZIP  = $(DIST_DIR)/TeamRecorderBar-v$(VERSION).zip
 
-.PHONY: run test setup build-recorder doctor permissions stop index menu-bar menu-bar-install dist icon reset-setup uninstall clean-reinstall
+.PHONY: run test setup build-recorder doctor permissions stop index watcher-pyz menu-bar menu-bar-install release icon reset-setup uninstall clean-reinstall
 
 run:
 	$(PYTHON) teams_recorder_v2.py
@@ -33,7 +36,19 @@ build-recorder:
 	    recorder/recorder
 	@echo "  ✓  recorder ($$(uname -m)) — done"
 
-menu-bar: icon
+watcher-pyz:
+	@echo "  ⏳  Building watcher.pyz..."
+	@rm -rf /tmp/watcher-pyz-build
+	@mkdir -p /tmp/watcher-pyz-build
+	@$(PYTHON) -m pip install --quiet --target /tmp/watcher-pyz-build python-dotenv
+	@cp teams_recorder_v2.py /tmp/watcher-pyz-build/__main__.py
+	@$(PYTHON) -m zipapp /tmp/watcher-pyz-build \
+	    --python "/usr/bin/python3" \
+	    --output watcher.pyz
+	@rm -rf /tmp/watcher-pyz-build
+	@echo "  ✓  watcher.pyz ($$(du -sh watcher.pyz | cut -f1))"
+
+menu-bar: icon watcher-pyz
 	@echo "  ⏳  Building TeamRecorderBar... (ครั้งแรกอาจใช้เวลา ~1 นาที)"
 	@echo "     กำลัง compile Swift app..."
 	@cd menu-bar && swift build -c release
@@ -46,20 +61,12 @@ menu-bar: icon
 	       "$(MENU_BAR_APP)/Contents/"
 	@cp menu-bar/Resources/AppIcon.icns \
 	       "$(MENU_BAR_APP)/Contents/Resources/"
-	@# Embed absolute watcher path so the app can find it after `make menu-bar-install`
-	@echo "$$(pwd)/teams_recorder_v2.py" \
-	       > "$(MENU_BAR_APP)/Contents/Resources/watcher_path.txt"
-	@# Pin the Python interpreter setup.sh installed deps into. Launch Services strips
-	@# /opt/homebrew/bin from PATH, so `env python3` resolves to system Python 3.9
-	@# (no python-dotenv). Use absolute brew paths — make subshell PATH is not reliable.
-	@BREW=""; \
-	  [ -x /opt/homebrew/bin/brew ] && BREW=/opt/homebrew/bin/brew; \
-	  [ -z "$$BREW" ] && [ -x /usr/local/bin/brew ] && BREW=/usr/local/bin/brew; \
-	  PY=""; \
-	  [ -n "$$BREW" ] && PY="$$($$BREW --prefix python 2>/dev/null)/bin/python3"; \
-	  [ -x "$$PY" ] || PY="$$(command -v python3)"; \
-	  echo "$$PY" > "$(MENU_BAR_APP)/Contents/Resources/python_path.txt"; \
-	  echo "  ✓  pinned python: $$PY"
+	@cp watcher.pyz "$(MENU_BAR_APP)/Contents/Resources/"
+	@cp recorder/recorder "$(MENU_BAR_APP)/Contents/Resources/"
+	@cp .env.example "$(MENU_BAR_APP)/Contents/Resources/"
+	@codesign -s - --force \
+	    --entitlements recorder/entitlements.plist \
+	    "$(MENU_BAR_APP)/Contents/Resources/recorder"
 	@codesign -s - --force "$(MENU_BAR_APP)"
 	@echo "  ✓  TeamRecorderBar.app ($$(uname -m)) → $(MENU_BAR_APP)"
 
@@ -113,13 +120,22 @@ uninstall:
 
 clean-reinstall: uninstall menu-bar-install
 
-dist: menu-bar
+release: menu-bar
+	@echo "  ⏳  Building release v$(VERSION)..."
 	@mkdir -p "$(DIST_DIR)"
-	@rm -f "$(DIST_DIR)/TeamRecorder.zip"
+	@rm -f "$(RELEASE_ZIP)"
 	@rm -rf "$(DIST_DIR)/TeamRecorderBar.app"
 	@cp -r "$(MENU_BAR_APP)" "$(DIST_DIR)/"
-	@(cd "$(DIST_DIR)" && zip -qr "TeamRecorder.zip" "TeamRecorderBar.app")
+	@find "$(DIST_DIR)/TeamRecorderBar.app" \( -name ".DS_Store" -o -name "*.pyc" \) -delete 2>/dev/null || true
+	@find "$(DIST_DIR)/TeamRecorderBar.app" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	@(cd "$(DIST_DIR)" && zip -qr "TeamRecorderBar-v$(VERSION).zip" "TeamRecorderBar.app" \
+	    --exclude "*.DS_Store" --exclude "*__pycache__/*" --exclude "*.env")
 	@rm -rf "$(DIST_DIR)/TeamRecorderBar.app"
-	@echo "  ⚠  $(DIST_DIR)/TeamRecorder.zip — LOCAL MACHINE ONLY"
-	@echo "     The .app embeds an absolute path to teams_recorder_v2.py on this machine."
-	@echo "     It will NOT work on a teammate's machine. See packaging/README.md."
+	@echo "  ✓  $(RELEASE_ZIP)"
+	@printf "     Size:   %s\n" "$$(du -sh '$(RELEASE_ZIP)' | cut -f1)"
+	@printf "     SHA256: %s\n" "$$(shasum -a 256 '$(RELEASE_ZIP)' | awk '{print $$1}')"
+	@echo ""
+	@echo "  ▶  Next steps after smoke test passes:"
+	@echo "     git tag v$(VERSION)"
+	@echo "     git push && git push --tags"
+	@echo "     gh release create v$(VERSION) '$(RELEASE_ZIP)' --title 'v$(VERSION)' --notes-file plan/release-notes-v$(VERSION).md"

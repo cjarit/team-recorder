@@ -27,6 +27,25 @@ from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = os.path.expanduser(os.getenv("ENV_FILE", os.path.join(BASE_DIR, ".env")))
+
+
+def _bootstrap_env(path: str) -> None:
+    if not os.getenv("TEAM_RECORDER_APP"):
+        return
+    if os.path.exists(path):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(
+            "RECORDING_DIR=~/Documents/Teams Recording\n"
+            "ICAL_BUDDY_PATH=\n"
+            "RECORDER_BIN=\n"
+            "AUDIO_INPUT_DEVICE_UID=\n"
+            "NOTIFY=\n"
+        )
+
+
+_bootstrap_env(ENV_FILE)
 load_dotenv(ENV_FILE)
 
 # ─── Config ──────────────────────────────────────────────────
@@ -142,6 +161,12 @@ def _read_events_bridge(path: str) -> "tuple | None":
     today = datetime.now().strftime("%Y-%m-%d")
     if data.get("date") != today:
         return None  # stale file from yesterday — fall through to icalBuddy
+    try:
+        if time.time() - os.path.getmtime(path) > 300:
+            log("[WARN] bridge file stale — falling back to icalBuddy")
+            return None
+    except OSError:
+        return None
     if data.get("authorized") is False:
         return CAL_NO_ACCESS, []
     today_date = datetime.now().date()
@@ -979,10 +1004,10 @@ def run_doctor() -> int:
     # macOS version
     mac_ver = platform.mac_ver()[0]
     try:
-        if int(mac_ver.split(".")[0]) >= 13:
+        if int(mac_ver.split(".")[0]) >= 14:
             _check(f"macOS {mac_ver}", "ok", "รองรับ ScreenCaptureKit")
         else:
-            _check(f"macOS {mac_ver}", "fail", "ต้องการ macOS 13+")
+            _check(f"macOS {mac_ver}", "fail", "ต้องการ macOS 14+")
             failures += 1
     except ValueError:
         _check(f"macOS {mac_ver or '?'}", "warn", "ตรวจ version ไม่ได้")
@@ -1416,12 +1441,12 @@ def main():
         log("[WARN] icalBuddy ไม่พบ — ชื่อ meeting จะเป็น 'Teams Meeting' เสมอ")
         log("  → ติดตั้งด้วย: brew install ical-buddy")
 
-    # ตรวจ macOS version (ต้องการ 13+ สำหรับ ScreenCaptureKit)
+    # ตรวจ macOS version (ต้องการ 14+ สำหรับ ScreenCaptureKit + EKEventStore full access)
     mac_ver = platform.mac_ver()[0]
     try:
         major = int(mac_ver.split(".")[0])
-        if major < 13:
-            log(f"[ERROR] macOS {mac_ver} ไม่รองรับ — ต้องการ macOS 13+ (ScreenCaptureKit)")
+        if major < 14:
+            log(f"[ERROR] macOS {mac_ver} ไม่รองรับ — ต้องการ macOS 14+ (Sonoma)")
             sys.exit(1)
     except ValueError:
         pass

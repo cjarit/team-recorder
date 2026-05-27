@@ -1,70 +1,96 @@
 # Team Recorder — Setup Guide
 
-> For non-developers. Step-by-step installation and first-run setup.
-
-## Prerequisites (ทำครั้งเดียว สำหรับเครื่องใหม่)
-
-### 1. Xcode Command Line Tools
-
-```bash
-xcode-select --install
-```
-
-กด **Install** ในหน้าต่างที่ขึ้นมา รอจนเสร็จ (~5–10 นาที)
-
-### 2. Homebrew
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-ทำตามคำแนะนำที่แสดง — บน Apple Silicon อาจต้องรันบรรทัดนี้เพิ่มหลังติดตั้ง:
-
-```bash
-eval "$(/opt/homebrew/bin/brew shellenv)"
-```
-
-> `make setup` จะติดตั้ง Python และ icalBuddy ผ่าน Homebrew ให้อัตโนมัติ
+> For new users. Step-by-step installation and first-run setup.
 
 ---
 
-## Requirements
+## Path A — Download from GitHub Releases (Recommended)
 
-- macOS 13 (Ventura) or later
-- [icalBuddy](https://hasseg.org/icalBuddy/) — install via `brew install ical-buddy`
+> No Terminal, no Homebrew required.
 
-## Installation
+### Step 1 — Download and install
+
+1. Go to [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
+2. Download **TeamRecorderBar-v1.0.0.zip**
+3. Double-click the zip to extract it
+4. Drag **TeamRecorderBar.app** to your **Applications** folder
+
+### Step 2 — Open for the first time
+
+macOS will block the app on first open because it is not from the Mac App Store.
+
+**Right-click → Open → Open** to bypass this warning. You only need to do this once.
+
+![Gatekeeper bypass — right-click Open dialog](images/gatekeeper-bypass.png)
+
+> Why does this happen? Team Recorder is code-signed but not notarized through Apple.<br>
+> Right-click → Open is the standard one-time bypass. After the first open, double-clicking works normally.
+
+### Step 3 — Grant permissions (Setup Guide)
+
+The Setup Guide opens automatically on first launch. Follow the three steps:
+
+| Step | Permission | Why |
+|------|------------|-----|
+| 1 | **Screen Recording** | Captures system audio from Teams |
+| 2 | **Microphone** | Records your voice |
+| 3 | **Calendar** | Names recordings after the meeting title |
+
+**Screen Recording note:** macOS requires a relaunch after granting this permission. The Setup Guide will show a "Relaunch App" button — click it, then reopen the app and proceed.
+
+**Calendar note:** Choose **Full Access** (not Write Only) when prompted. The app writes today's events to a file; the recorder reads it without a second permission prompt.
+
+### Step 4 — Click Finish
+
+The watcher starts automatically. You'll see the grey waveform icon in your menu bar — you're ready to record.
+
+---
+
+## Path B — Developer Install (Terminal)
+
+> For contributors or anyone who wants to build from source.
+
+### Prerequisites
+
+- macOS 14 (Sonoma) or later
+- Xcode Command Line Tools: `xcode-select --install`
+- [Homebrew](https://brew.sh)
+
+### Install
 
 ```bash
 git clone https://github.com/cjarit/team-recorder
 cd team-recorder
-make setup              # install dependencies + create .env
+make setup              # install Python deps + create .env
 make menu-bar-install   # build + copy to /Applications/ + launch
 ```
 
-> **หมายเหตุ:** ยังไม่มี installer สำเร็จรูป — ปัจจุบันต้อง clone repo และ build เอง
-> ดู [packaging/README.md](../../packaging/README.md) สำหรับ roadmap
+The app opens automatically. If the Setup Guide does not appear, run:
 
-> **QA / reinstall:** ถ้า Setup Guide ไม่ขึ้นหลัง reinstall ให้รัน:
-> ```bash
-> make reset-setup && make menu-bar-install
-> ```
+```bash
+make reset-setup
+```
 
-## First-Run Setup
+Then reopen the app from `/Applications/`.
 
-The app shows a Setup Guide on first launch:
+---
 
-1. **Screen Recording** — click "Add Team Recorder to Screen Recording", enable the toggle in System Settings, then click "Relaunch App"
-2. **Microphone** — click "Grant Access" and allow in the popup
-3. **Calendar Access** — click "Grant Access" and choose **Full Access** (not Write Only). The app will show "Calendar bridge ready" — this writes today's events to a shared file the watcher reads directly, with no extra prompts.
-4. Click **Finish** — the recorder starts automatically
-
-Screen Recording is applied by macOS only after relaunch. The app will not start the watcher from Setup until this relaunch path is complete.
-
-## Permissions checklist
+## Permissions Checklist
 
 | Permission | Where to grant | Why needed |
 |------------|----------------|------------|
 | Screen Recording | System Settings → Privacy & Security → Screen Recording | Captures system audio from Teams |
 | Microphone | System Settings → Privacy & Security → Microphone | Records your voice |
-| Calendar | System Settings → Privacy & Security → Calendars | Names recordings after meeting title (app writes bridge file; watcher reads it) |
+| Calendar — Full Access | System Settings → Privacy & Security → Calendars | Names recordings after meeting title |
+
+All three are required for full functionality. Calendar is optional — if denied, recordings are named "Teams Meeting" instead of the meeting title.
+
+---
+
+## After Setup
+
+- Your recordings are saved to `~/Documents/Teams Recording/` by default
+- To change the folder: menu bar icon → 📁 Recordings Folder → Change Folder…
+- To enable auto-start on login: menu bar icon → Launch at Login
+
+See [daily-use.md](daily-use.md) for the full daily workflow.

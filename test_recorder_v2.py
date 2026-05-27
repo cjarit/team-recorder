@@ -1413,6 +1413,76 @@ def test_meetings_cache_invalidated_when_bridge_mtime_changes(monkeypatch, tmp_p
     assert len(calls) == 1, "newer bridge mtime must invalidate cache"
 
 
+# ─── Bridge mtime staleness (FR-CAL-001 / FR-CAL-002) ────────
+
+def test_read_events_bridge_fresh_mtime_returns_result(monkeypatch, tmp_path):
+    """File written within 5 min must be returned normally."""
+    import json
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    f = tmp_path / "events-today.json"
+    today = datetime.now().strftime("%Y-%m-%d")
+    f.write_text(json.dumps({"date": today, "events": []}), encoding="utf-8")
+    monkeypatch.setattr(v2.os.path, "getmtime", lambda _: time.time() - 60)
+    result = v2._read_events_bridge(str(f))
+    assert result is not None
+    status, _ = result
+    assert status == v2.CAL_FROM_APP
+
+
+def test_read_events_bridge_stale_mtime_returns_none(monkeypatch, tmp_path):
+    """File older than 5 min must return None — fall through to icalBuddy."""
+    import json
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    f = tmp_path / "events-today.json"
+    today = datetime.now().strftime("%Y-%m-%d")
+    f.write_text(json.dumps({"date": today, "events": []}), encoding="utf-8")
+    monkeypatch.setattr(v2.os.path, "getmtime", lambda _: time.time() - 400)
+    result = v2._read_events_bridge(str(f))
+    assert result is None
+
+
+# ─── _bootstrap_env (FR-ENV-001 / FR-ENV-003) ────────────────
+
+def test_env_bootstrap_creates_defaults_in_app_mode(monkeypatch, tmp_path):
+    """.env created with defaults when TEAM_RECORDER_APP=1 and file absent."""
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    env_path = str(tmp_path / "support" / ".env")
+    v2._bootstrap_env(env_path)
+    assert os.path.exists(env_path)
+    content = open(env_path).read()
+    assert "RECORDING_DIR=~/Documents/Teams Recording" in content
+    assert "ICAL_BUDDY_PATH=" in content
+
+
+def test_env_bootstrap_creates_parent_directory(monkeypatch, tmp_path):
+    """Bootstrap creates intermediate directories (App Support may not exist on first launch)."""
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    env_path = str(tmp_path / "a" / "b" / "c" / ".env")
+    v2._bootstrap_env(env_path)
+    assert os.path.exists(env_path)
+
+
+def test_env_bootstrap_skipped_without_app_mode(monkeypatch, tmp_path):
+    """Bootstrap must be a no-op when TEAM_RECORDER_APP is not set (make run / Terminal)."""
+    monkeypatch.delenv("TEAM_RECORDER_APP", raising=False)
+    env_path = str(tmp_path / ".env")
+    v2._bootstrap_env(env_path)
+    assert not os.path.exists(env_path)
+
+
+def test_env_bootstrap_idempotent(monkeypatch, tmp_path):
+    """Bootstrap must not overwrite an existing .env with user-edited values."""
+    monkeypatch.setenv("TEAM_RECORDER_APP", "1")
+    env_path = str(tmp_path / ".env")
+    with open(env_path, "w") as f:
+        f.write("RECORDING_DIR=/my/recordings\nNOTIFY=1\n")
+    v2._bootstrap_env(env_path)
+    v2._bootstrap_env(env_path)
+    content = open(env_path).read()
+    assert "/my/recordings" in content
+    assert content.count("RECORDING_DIR=") == 1
+
+
 def test_stop_recording_retries_calendar_when_unmatched(monkeypatch, tmp_path):
     """When meeting_name is None at stop time, retry with fresh bridge data."""
     monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))

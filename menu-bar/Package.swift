@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "TeamRecorderBar",
     platforms: [
-        .macOS(.v13)   // macOS 13+ — matches recorder binary requirement
+        .macOS(.v14)   // macOS 14+ Sonoma — EKEventStore full-access API requires 14; SMAppService reliable from 14
     ],
     targets: [
         .executableTarget(
