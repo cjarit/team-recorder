@@ -14,12 +14,11 @@
 | 3 — Clean-Mac requirements | ✅ Done | EARS spec in project-context/requirements-public-release.md |
 | 4 — Packaging implementation | ✅ Done | Bundle paths, watcher.pyz, .env dual-source, preflight UX |
 | 5 — Public docs rewrite | ✅ Done | README Releases-first, setup.md, faq.md (new), CLAUDE.md, CHANGELOG |
-| 6 — Release build + publish | ⚠ Smoke test pending | QA fixes committed; release zip rebuilt (244KB, SHA256 9d1da63…); push + tag blocked on smoke test |
+| 6 — Release build + publish | ✅ Done | v1.0.0 tagged + pushed; GitHub Release live at cjarit/team-recorder/releases/tag/v1.0.0 |
 
-## Open items before Phase 6
+## Open items (post-release)
 
-- [ ] **Gatekeeper screenshot** — capture the right-click → Open dialog on a real macOS 14 Sonoma machine during smoke test; save as `docs/user/images/gatekeeper-bypass.png` and re-add the image reference in README.md and setup.md (currently replaced by text callout).
-- [ ] **Sonoma smoke test** — device unavailable; must be completed before tagging v1.0.0 (see Phase 2 note).
+- [ ] **Gatekeeper screenshot** — capture the right-click → Open dialog on a Sonoma machine; save as `docs/user/images/gatekeeper-bypass.png` and restore the image reference in README.md and setup.md (currently a text callout).
 
 ## Blocking decisions made
 
