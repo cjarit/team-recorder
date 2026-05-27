@@ -14,7 +14,7 @@
 | 3 — Clean-Mac requirements | ✅ Done | EARS spec in project-context/requirements-public-release.md |
 | 4 — Packaging implementation | ✅ Done | Bundle paths, watcher.pyz, .env dual-source, preflight UX |
 | 5 — Public docs rewrite | ✅ Done | README Releases-first, setup.md, faq.md (new), CLAUDE.md, CHANGELOG |
-| 6 — Release build + publish | — | make release, v1.0.0 GitHub Release |
+| 6 — Release build + publish | ⚠ Smoke test pending | Commit done (f49aaae), release zip built (272KB, SHA256 cf179ac…); push + tag blocked on Sonoma smoke test |
 
 ## Open items before Phase 6
 
