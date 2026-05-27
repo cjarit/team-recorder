@@ -25,10 +25,8 @@
 2. แตกไฟล์ zip แล้ว **ลาก `TeamRecorderBar.app` ไปไว้ที่ `/Applications/`**
 3. เปิดครั้งแรก — **คลิกขวา → Open** (ไม่ใช่ดับเบิลคลิก)
 
-   ![Gatekeeper bypass — right-click Open dialog](docs/user/images/gatekeeper-bypass.png)
-
    > **ทำไมต้องคลิกขวา?** macOS จะแสดงคำเตือน "ไม่รู้จักผู้พัฒนา" เพราะแอปนี้ไม่ได้ผ่าน Apple notarization<br>
-   > คลิกขวา → Open → Open จะข้ามการตรวจสอบนี้ ทำครั้งเดียว<br>
+   > คลิกขวา → เลือก **Open** → กด **Open** ในหน้าต่างที่ขึ้นมา ทำครั้งเดียว<br>
    > ครั้งต่อไปดับเบิลคลิกได้ตามปกติ
 
 4. **Setup Guide** จะขึ้นอัตโนมัติ — ให้สิทธิ์ทั้ง 3 ขั้นตอน แล้วกด Finish

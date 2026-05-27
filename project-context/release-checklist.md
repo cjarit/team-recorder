@@ -24,6 +24,17 @@
 - [ ] Recover Recorder… clears stale `recording` / stuck `stopping` state without restarting the app
 - [ ] Saved-recording notification opens Finder with the `.m4a` selected
 
+## Cross-reference sweep (must be zero hits before release)
+
+```bash
+grep -rn "docs/dev\|docs/plans\|docs/archive\|packaging/" \
+  --include="*.md" --include="*.swift" --include="*.py" \
+  --include="Makefile" --include="*.sh" . \
+  --exclude-dir=plan --exclude-dir=project-context --exclude-dir=archive
+```
+
+Hits in `plan/archive/` or `plan/DECISIONS.md` are intentional historical references — only active files matter.
+
 ## After release
 
 - [ ] Tag commit: `git tag vX.Y`

@@ -21,8 +21,6 @@ macOS will block the app on first open because it is not from the Mac App Store.
 
 **Right-click → Open → Open** to bypass this warning. You only need to do this once.
 
-![Gatekeeper bypass — right-click Open dialog](images/gatekeeper-bypass.png)
-
 > Why does this happen? Team Recorder is code-signed but not notarized through Apple.<br>
 > Right-click → Open is the standard one-time bypass. After the first open, double-clicking works normally.
 

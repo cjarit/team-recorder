@@ -29,7 +29,7 @@ On macOS 15 Sequoia: if right-click → Open shows no "Open" button, go to Syste
 ## SHA256
 
 ```
-cf179ac0931c39a7c104169965e9e18a5dcb2ffa7aae0564173add3f013916f0  TeamRecorderBar-v1.0.0.zip
+9d1da63942dcd642e73c455dbb74ca3462fab45947d6f7baa4ecf3707261d2ed  TeamRecorderBar-v1.0.0.zip
 ```
 
 ## What's new

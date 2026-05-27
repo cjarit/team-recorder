@@ -73,3 +73,8 @@ logs/
 scratch/
 .plans-local/
 plan/LESSONS.local.md
+
+# ────────────────────────────────────────────
+# Local backup graveyard (obsolete artifacts)
+# ────────────────────────────────────────────
+_backup/

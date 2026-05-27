@@ -40,7 +40,7 @@ Team Recorder/
 │       ├── PermissionChecker.swift   CGPreflightScreenCaptureAccess, AVCapture, EKEventStore
 │       └── SetupWindowController.swift  step-by-step first-run permission guide
 ├── setup.sh                 One-command setup for new machines
-├── Makefile                 make run / test / setup / build-recorder / watcher-pyz / menu-bar / dist
+├── Makefile                 make run / test / setup / build-recorder / watcher-pyz / menu-bar / release
 ├── .env.example             Config template — safe to commit
 ├── .env                     Local config — NEVER commit
 ├── Start Recorder.command   Double-click to launch (macOS)

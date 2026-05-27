@@ -40,7 +40,7 @@ watcher-pyz:
 	@echo "  ⏳  Building watcher.pyz..."
 	@rm -rf /tmp/watcher-pyz-build
 	@mkdir -p /tmp/watcher-pyz-build
-	@$(PYTHON) -m pip install --quiet --target /tmp/watcher-pyz-build python-dotenv
+	@$(PYTHON) -m pip install --quiet --no-compile --target /tmp/watcher-pyz-build python-dotenv
 	@cp teams_recorder_v2.py /tmp/watcher-pyz-build/__main__.py
 	@$(PYTHON) -m zipapp /tmp/watcher-pyz-build \
 	    --python "/usr/bin/python3" \
@@ -86,7 +86,7 @@ menu-bar-install: menu-bar
 	@echo "     (ถ้าไม่ขึ้น รัน: make reset-setup แล้วเปิดแอปใหม่)"
 
 icon:
-	@python3 scripts/make_icon.py
+	@[ -f menu-bar/Resources/AppIcon.icns ] || python3 scripts/make_icon.py
 
 reset-setup:
 	@defaults delete com.team-recorder.menu-bar setupCompleted 2>/dev/null || true
