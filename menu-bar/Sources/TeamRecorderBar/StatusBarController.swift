@@ -20,7 +20,9 @@ class StatusBarController {
     private var launchAtLoginItem:   NSMenuItem!
     private var launchWarningItem:   NSMenuItem!   // hidden unless watcher failed to start
     fileprivate var calendarStatusItem: NSMenuItem!
-    private var permSubmenuDelegate: PermSubmenuDelegate! // kept alive for NSMenuDelegate
+    private var permSubmenuDelegate:    PermSubmenuDelegate!    // kept alive for NSMenuDelegate
+    private var trackedCalendarsItem:   NSMenuItem!
+    private var calSubmenuDelegate:     CalendarsSubmenuDelegate! // kept alive for NSMenuDelegate
 
     // File watcher for status.json
     private var fileSource: DispatchSourceFileSystemObject?
@@ -38,10 +40,17 @@ class StatusBarController {
 
     // MARK: — Menu construction
 
+    private static let menuSymbolConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+
+    private static func menuSymbol(_ name: String) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(menuSymbolConfig)
+    }
+
     private func buildMenu() {
         let menu = NSMenu()
 
-        // Bold title row
+        // ── Group 1: Identity + Status ─────────────────────────
         let titleItem = NSMenuItem()
         titleItem.attributedTitle = NSAttributedString(
             string: "Team Recorder",
@@ -50,51 +59,51 @@ class StatusBarController {
         titleItem.isEnabled = false
         menu.addItem(titleItem)
 
-        // Launch-failure warning — hidden by default, shown when watcher can't start
         launchWarningItem = NSMenuItem(
-            title: "⚠ Can't start watcher — Show details…",
+            title: "Can't start watcher — Show details…",
             action: #selector(showLaunchWarning),
             keyEquivalent: ""
         )
         launchWarningItem.target = self
+        launchWarningItem.image = Self.menuSymbol("exclamationmark.triangle")
         launchWarningItem.isHidden = true
         menu.addItem(launchWarningItem)
 
-        menu.addItem(.separator())
-
-        // Live status line
         statusLine = NSMenuItem(title: "Checking…", action: nil, keyEquivalent: "")
         statusLine.isEnabled = false
         menu.addItem(statusLine)
 
         menu.addItem(.separator())
 
-        // Manual recording controls
+        // ── Group 2: Recording controls ────────────────────────
         startRecordingItem = NSMenuItem(
-            title: "▶  Start Recording",
+            title: "Start Recording",
             action: #selector(startRecording),
             keyEquivalent: ""
         )
         startRecordingItem.target = self
+        startRecordingItem.image = Self.menuSymbol("record.circle")
         menu.addItem(startRecordingItem)
 
         stopRecordingItem = NSMenuItem(
-            title: "■  Stop Recording",
+            title: "Stop Recording",
             action: #selector(stopRecording),
             keyEquivalent: ""
         )
         stopRecordingItem.target = self
+        stopRecordingItem.image = Self.menuSymbol("stop.fill")
         menu.addItem(stopRecordingItem)
 
         menu.addItem(.separator())
 
-        // Watcher start/stop toggle
+        // ── Group 3: Watcher + Library ─────────────────────────
         toggleItem = NSMenuItem(
             title: "Start Watcher",
             action: #selector(toggleWatcher),
             keyEquivalent: ""
         )
         toggleItem.target = self
+        toggleItem.image = Self.menuSymbol("eye")
         menu.addItem(toggleItem)
 
         recoverItem = NSMenuItem(
@@ -103,11 +112,12 @@ class StatusBarController {
             keyEquivalent: ""
         )
         recoverItem.target = self
+        recoverItem.image = Self.menuSymbol("arrow.clockwise")
         recoverItem.isHidden = true
         menu.addItem(recoverItem)
 
-        // Recordings folder submenu
-        let folderItem = NSMenuItem(title: "📁  Recordings Folder", action: nil, keyEquivalent: "")
+        let folderItem = NSMenuItem(title: "Recordings Folder", action: nil, keyEquivalent: "")
+        folderItem.image = Self.menuSymbol("folder")
         let folderSubmenu = NSMenu()
 
         folderPathItem = NSMenuItem(title: "~/Documents/Teams Recording", action: nil, keyEquivalent: "")
@@ -135,17 +145,24 @@ class StatusBarController {
         folderItem.submenu = folderSubmenu
         menu.addItem(folderItem)
 
-        menu.addItem(.separator())
-
-        // Last recording — clickable when a path is available
         lastRecordingItem = NSMenuItem(title: "No recordings yet", action: nil, keyEquivalent: "")
         lastRecordingItem.isEnabled = false
+        lastRecordingItem.image = Self.menuSymbol("clock")
         menu.addItem(lastRecordingItem)
 
         menu.addItem(.separator())
 
-        // Permissions submenu
+        // ── Group 4: Settings ──────────────────────────────────
+        trackedCalendarsItem = NSMenuItem(title: "Tracked Calendars", action: nil, keyEquivalent: "")
+        trackedCalendarsItem.image = Self.menuSymbol("calendar")
+        let calSubmenu = NSMenu()
+        calSubmenuDelegate = CalendarsSubmenuDelegate()
+        calSubmenu.delegate = calSubmenuDelegate
+        trackedCalendarsItem.submenu = calSubmenu
+        menu.addItem(trackedCalendarsItem)
+
         let permItem = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
+        permItem.image = Self.menuSymbol("lock.shield")
         let permSubmenu = NSMenu()
         permSubmenuDelegate = PermSubmenuDelegate()
         permSubmenuDelegate.controller = self
@@ -189,18 +206,18 @@ class StatusBarController {
         permItem.submenu = permSubmenu
         menu.addItem(permItem)
 
-        // Setup Guide — re-opens the step-by-step permission window
         let setupItem = NSMenuItem(
             title: "Setup Guide…",
             action: #selector(openSetupGuide),
             keyEquivalent: ""
         )
         setupItem.target = self
+        setupItem.image = Self.menuSymbol("questionmark.circle")
         menu.addItem(setupItem)
 
         menu.addItem(.separator())
 
-        // Launch at Login toggle
+        // ── Group 5: App ───────────────────────────────────────
         launchAtLoginItem = NSMenuItem(
             title: "Launch at Login",
             action: #selector(toggleLaunchAtLogin),
@@ -209,7 +226,6 @@ class StatusBarController {
         launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
 
-        // Quit
         menu.addItem(NSMenuItem(
             title: "Quit",
             action: #selector(NSApplication.terminate(_:)),
@@ -230,8 +246,11 @@ class StatusBarController {
     }
 
     @objc private func toggleWatcher() {
+        // Dim icon during the ~0.5s launch gap (microinteraction: action registered)
+        statusItem.button?.appearsDisabled = true
         WatcherManager.shared.toggle()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.statusItem.button?.appearsDisabled = false
             self?.refresh()
         }
     }
@@ -360,30 +379,50 @@ class StatusBarController {
     private func updateStatusLine() {
         let s = currentStatus
         if isStaleRecordingState {
-            statusLine.title = "⚠ Status stale — recover recorder"
+            statusLine.title = "Status stale — recover recorder"
+            statusLine.image = Self.statusSymbol("exclamationmark.circle.fill", color: .systemOrange)
             return
         }
         guard let s else {
             statusLine.title = WatcherManager.shared.isRunning
-                ? "○ Watcher running — no status yet"
-                : "○ Idle — watcher not running"
+                ? "Watcher running — no status yet"
+                : "Idle — watcher not running"
+            statusLine.image = Self.statusSymbol("waveform.circle", color: nil)
             return
         }
         switch s.state {
         case "recording":
             let name = s.meetingName ?? "Meeting"
-            statusLine.title = "● Recording: \(name)"
+            statusLine.title = "Recording: \(name)"
+            statusLine.image = Self.statusSymbol("record.circle.fill", color: .systemRed)
         case "stopping":
-            statusLine.title = "◌ Stopping…"
+            statusLine.title = "Stopping…"
+            statusLine.image = Self.statusSymbol("stop.circle", color: .secondaryLabelColor)
         case "waiting":
-            statusLine.title = "○ Waiting for Teams meeting…"
+            statusLine.title = "Waiting for Teams meeting…"
+            statusLine.image = Self.statusSymbol("waveform.circle", color: nil)
         case "error":
             let err   = s.lastError ?? "Unknown error"
             let short = err.count > 60 ? String(err.prefix(57)) + "…" : err
-            statusLine.title = "⚠ Error: \(short)"
+            statusLine.title = "Error: \(short)"
+            statusLine.image = Self.statusSymbol("exclamationmark.circle.fill", color: .systemOrange)
         default:
-            statusLine.title = "○ Idle"
+            statusLine.title = "Idle"
+            statusLine.image = Self.statusSymbol("waveform.circle", color: nil)
         }
+    }
+
+    private static func statusSymbol(_ name: String, color: NSColor?) -> NSImage? {
+        let size = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        if let color {
+            let colorConf = NSImage.SymbolConfiguration(hierarchicalColor: color)
+            return NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                .withSymbolConfiguration(size.applying(colorConf))
+        }
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(size)
+        img?.isTemplate = true
+        return img
     }
 
     /// Update all three watcher/recording control items together.
@@ -402,12 +441,14 @@ class StatusBarController {
         recoverItem.isHidden = !stale && state != "error"
         recoverItem.isEnabled = stale || state == "error"
 
-        // Start/Stop Watcher toggle
+        // Start/Stop Watcher toggle — image tracks title
         if WatcherManager.shared.watcherURL == nil {
             toggleItem.title     = "Watcher not configured"
+            toggleItem.image     = Self.menuSymbol("eye")
             toggleItem.isEnabled = false
         } else {
             toggleItem.title     = running ? "Stop Watcher" : "Start Watcher"
+            toggleItem.image     = Self.menuSymbol(running ? "eye.slash" : "eye")
             toggleItem.isEnabled = true
         }
     }
@@ -431,7 +472,7 @@ class StatusBarController {
         var label = "Last: \(name)"
         if let savedAt = currentStatus?.lastSavedAt, savedAt.count >= 16 {
             let time = String(savedAt.dropFirst(11).prefix(5))  // "HH:MM"
-            label += " (\(time))"
+            label = "Last: \(name) — \(time)"
         }
         if let reason = currentStatus?.lastFallbackReason, !reason.isEmpty {
             label += " — fallback: \(reason)"
@@ -675,6 +716,70 @@ class StatusBarController {
 
 // MARK: — NSMenuDelegate helper (probe icalBuddy on Permissions submenu open)
 // StatusBarController doesn't inherit NSObject, so delegate is a thin helper.
+
+private class CalendarsSubmenuDelegate: NSObject, NSMenuDelegate {
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        guard PermissionChecker.calendar() == .granted else {
+            let item = NSMenuItem(title: "Grant Calendar access in Permissions…", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return
+        }
+
+        let calendars = CalendarEventBridge.shared.allCalendars()
+
+        guard !calendars.isEmpty else {
+            let item = NSMenuItem(title: "No calendars in Calendar.app", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            return
+        }
+
+        let tracked = CalendarEventBridge.shared.trackedCalendarIds
+
+        if calendars.count >= 9 {
+            let resetItem = NSMenuItem(title: "Track All Calendars", action: #selector(resetToAll), keyEquivalent: "")
+            resetItem.target = self
+            resetItem.state = (tracked == nil) ? .on : .off
+            menu.addItem(resetItem)
+            menu.addItem(.separator())
+        }
+
+        for cal in calendars {
+            let item = NSMenuItem(title: cal.title, action: #selector(toggleCalendar(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = cal.calendarIdentifier
+            item.state = tracked?.contains(cal.calendarIdentifier) != false ? .on : .off
+            menu.addItem(item)
+        }
+    }
+
+    @objc private func resetToAll() {
+        CalendarEventBridge.shared.setTrackedCalendarIds(nil)
+    }
+
+    @objc private func toggleCalendar(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        let bridge = CalendarEventBridge.shared
+        let allIds = bridge.allCalendars().map(\.calendarIdentifier)
+        var current = bridge.trackedCalendarIds ?? allIds
+
+        if current.contains(id) {
+            current.removeAll { $0 == id }
+        } else {
+            current.append(id)
+            if current.count == allIds.count {
+                // All re-enabled — collapse back to "track all" (nil)
+                bridge.setTrackedCalendarIds(nil)
+                return
+            }
+        }
+        bridge.setTrackedCalendarIds(current)
+    }
+}
 
 private class PermSubmenuDelegate: NSObject, NSMenuDelegate {
     weak var controller: StatusBarController?

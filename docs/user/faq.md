@@ -65,6 +65,14 @@ This means `watcher.pyz` or the `recorder` binary is missing from the downloaded
 
 ---
 
+**Why are recordings smaller than before?**
+
+Recording files are optimised for AI transcription (NotebookLM, Whisper). Audio is captured at 16 kHz mono — the same sample rate those tools use internally — so the file is roughly **3× smaller** with no loss in transcript quality. A 1-hour meeting is about 14 MB instead of ~43 MB.
+
+If you re-listen to the recording and the audio sounds compressed, that is expected and normal. The quality is identical for transcription purposes.
+
+---
+
 **Can I use this on macOS 13 Ventura or earlier?**
 
 No. Team Recorder requires macOS 14 (Sonoma) or later. This is a hard requirement — the app uses Calendar APIs (EKEventStore full access) that are only stable on macOS 14+.

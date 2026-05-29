@@ -635,7 +635,14 @@ def test_live_recorder_start_stop(tmp_path):
             f"expected STOPPED_OK, got {line!r} — file may be incomplete"
 
         assert os.path.exists(out_path), "output file not created"
-        assert os.path.getsize(out_path) > 0, "output file is empty"
+        size = os.path.getsize(out_path)
+        assert size > 0, "output file is empty"
+        # 32 kbps × 2s = 8 000 bytes minimum; allow generous 3× headroom for container overhead.
+        # Upper bound: 200 KB for ≤5s guards against accidental revert to 96 kbps (would be ~60 KB/s).
+        assert size < 200_000, (
+            f"output file suspiciously large ({size} bytes for ~2s): "
+            "kBitrate may have reverted to a higher value"
+        )
     finally:
         proc.terminate()
         proc.wait(timeout=5)

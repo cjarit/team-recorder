@@ -38,6 +38,8 @@ The Setup Guide opens automatically on first launch. Follow the three steps:
 
 **Calendar note:** Choose **Full Access** (not Write Only) when prompted. The app writes today's events to a file; the recorder reads it without a second permission prompt.
 
+**Tracked Calendars:** After setup, you can choose which calendars are scanned for meeting names. Click the menu bar icon → **Tracked Calendars** and check or uncheck individual calendars. Unchecked calendars are excluded from matching — useful if personal or holiday calendars pollute recording names. Default is all calendars tracked. This is a per-user setting saved locally.
+
 ### Step 4 — Click Finish
 
 The watcher starts automatically. You'll see the grey waveform icon in your menu bar — you're ready to record.

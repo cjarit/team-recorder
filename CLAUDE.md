@@ -192,6 +192,18 @@ DISK_WARN_MB     = 500  # warn early, still start recording
 
 If UDP false-triggers become an issue: raise `UDP_MEET_THRESH` to 5 or 6. Do not lower it.
 
+### Swift audio constants (`recorder/Sources/recorder/main.swift`)
+
+```swift
+kSampleRate = 16_000   // Hz — ASR-optimised (Whisper/NotebookLM sweet spot; was 48 000)
+kBitrate    = 32_000   // bps — ~14 MB/hr (32 kbps × 3600s ÷ 8; was 96 000 → ~43 MB/hr); bump to 48 000 if Thai ASR degrades
+kChannels   = 1        // mono — Teams audio is mono in practice
+```
+
+`kSampleRate` is used in three places: `aacOutputSettings()`, `targetMicFmt`, and `cfg.sampleRate` in `buildSCKStream()`. Changing it automatically adjusts both the mic resampling path and the SCK delivery rate — no other edits needed.
+
+If Thai transcription accuracy degrades at 32 kbps: change `kBitrate` to `48_000` and rebuild. 48 kbps is the widely-cited transparent-for-speech threshold for AAC-LC mono.
+
 Calendar matching is **not** a tunable constant — `find_matching_meeting()` matches a
 recording to a calendar event by interval containment with a fixed ±5-minute slack.
 
@@ -227,6 +239,8 @@ Get mic UID: `recorder/recorder --list-devices`
 **Why not JXA/AppleScript for calendar?** JXA hangs when Calendar app is closed. icalBuddy reads EventKit store directly — confirmed production issue, do not revert.
 
 **Calendar architecture (TeamRecorderBar):** `Python.framework` has its own bundle ID (`org.python.python`). macOS TCC uses the nearest ancestor with a bundle ID as the responsible app, so Python claims that role — icalBuddy's Calendar request is attributed to Python, which cannot be granted Calendar via System Settings UI. Fix: TeamRecorderBar reads Calendar via its own `EKEventStore` grant, writes `APP_SUPPORT_DIR/events-today.json`, Python reads the file (no TCC needed). icalBuddy remains the fallback for `make run` / Terminal contexts where TCC sees Terminal.
+
+**Calendar allowlist (per-user filter):** Users can limit which calendars are scanned for meeting names via the "Tracked Calendars" submenu in the menu bar. The allowlist is persisted as `trackedCalendarIds` (`[String]`) in `UserDefaults`. `nil` (key absent) = track all calendars. The filter is applied in `CalendarEventBridge.writeEventsIfAuthorized()` before building `events-today.json`. Stale identifiers (from deleted calendars) are silently ignored at query time — **never auto-removed** during timer cycles to avoid falsely wiping the allowlist during transient account sync outages. Each event dict includes `"calendar"` (display name) and `"calendarId"` (stable `EKCalendar.calendarIdentifier`) fields for future use. Python ignores these fields — filtering is fully upstream in Swift.
 
 ---
 

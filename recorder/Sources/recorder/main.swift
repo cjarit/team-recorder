@@ -23,9 +23,10 @@ import Foundation
 import ScreenCaptureKit
 
 // ─── Audio output parameters ──────────────────────────────────
-// ไม่เปลี่ยนค่าเหล่านี้โดยไม่ทดสอบ: ตั้ง match กับ v1 compress output
-private let kSampleRate: Double = 48_000
-private let kBitrate:    Int    = 96_000
+// ปรับสำหรับ ASR (Whisper/NotebookLM): 16 kHz mono 32 kbps ≈ 3.5 MB/hr
+// kSampleRate ใช้ 3 จุด: aacOutputSettings, targetMicFmt, cfg.sampleRate
+private let kSampleRate: Double = 16_000
+private let kBitrate:    Int    = 32_000
 private let kChannels:   Int    = 1
 
 private func aacOutputSettings() -> [String: Any] {
@@ -483,7 +484,6 @@ final class RecorderEngine {
     private func handleMicBuffer(_ inputBuf: AVAudioPCMBuffer) {
         guard let converter = micConverter else { return }
 
-        // Convert to 48kHz mono Float32
         let ratio = kSampleRate / inputBuf.format.sampleRate
         let capacity = AVAudioFrameCount(Double(inputBuf.frameLength) * ratio) + 16
         guard let converted = AVAudioPCMBuffer(pcmFormat: targetMicFmt,

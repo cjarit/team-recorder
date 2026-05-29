@@ -8,6 +8,8 @@ final class CalendarEventBridge {
     private var timers: [Timer] = []
     private var isObserving = false
 
+    private static let trackedCalendarIdsKey = "trackedCalendarIds"
+
     static var eventsFileURL: URL {
         RecorderStatus.statusFileURL
             .deletingLastPathComponent()
@@ -16,15 +18,62 @@ final class CalendarEventBridge {
 
     private init() {}
 
+    // All event calendars sorted by title — consumed by the Tracked Calendars submenu.
+    func allCalendars() -> [EKCalendar] {
+        guard PermissionChecker.calendar() == .granted else { return [] }
+        return store.calendars(for: .event).sorted { $0.title < $1.title }
+    }
+
+    // nil = no allowlist (track all calendars).
+    var trackedCalendarIds: [String]? {
+        UserDefaults.standard.stringArray(forKey: Self.trackedCalendarIdsKey)
+    }
+
+    // Persists the allowlist and triggers an immediate bridge-file update.
+    // Pass nil to reset to "track all".
+    func setTrackedCalendarIds(_ ids: [String]?) {
+        if let ids {
+            UserDefaults.standard.set(ids, forKey: Self.trackedCalendarIdsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.trackedCalendarIdsKey)
+        }
+        writeEventsIfAuthorized()
+    }
+
     func writeEventsIfAuthorized() {
         guard PermissionChecker.calendar() == .granted else {
             writeJSON(["date": todayString(), "authorized": false] as [String: Any])
             return
         }
+
+        // Resolve calendar filter. Stale IDs (deleted/unavailable calendars) are silently
+        // ignored — never written back to UserDefaults here to avoid falsely clearing
+        // the allowlist during transient account sync outages.
+        // nil   = track all (no allowlist set)
+        // []    = user explicitly unchecked everything → write empty events (Python falls back to "Teams Meeting")
+        // [ids] = filter; if all IDs are stale, fall back to allCals (transient unavailability guard)
+        let allCals = store.calendars(for: .event)
+        let filteredCals: [EKCalendar]
+        if let storedIds = UserDefaults.standard.stringArray(forKey: Self.trackedCalendarIdsKey) {
+            guard !storedIds.isEmpty else {
+                writeJSON([
+                    "date":      todayString(),
+                    "updatedAt": DateFormatter.teamRecorderStatus.string(from: Date()),
+                    "events":    [[String: String]](),
+                ] as [String: Any])
+                return
+            }
+            let valid = allCals.filter { storedIds.contains($0.calendarIdentifier) }
+            filteredCals = valid.isEmpty ? allCals : valid
+        } else {
+            filteredCals = allCals
+        }
+
         let cal = Calendar.current
         let startOfDay = cal.startOfDay(for: Date())
         guard let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay) else { return }
-        let pred = store.predicateForEvents(withStart: startOfDay, end: endOfDay, calendars: nil)
+        let pred = store.predicateForEvents(withStart: startOfDay, end: endOfDay,
+                                            calendars: filteredCals)
         let events = store.events(matching: pred)
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
@@ -33,7 +82,12 @@ final class CalendarEventBridge {
             .filter { !$0.isAllDay }
             .compactMap { e in
                 guard let title = e.title, !title.isEmpty else { return nil }
-                var d: [String: String] = ["title": title, "start": fmt.string(from: e.startDate)]
+                var d: [String: String] = [
+                    "title":      title,
+                    "start":      fmt.string(from: e.startDate),
+                    "calendar":   e.calendar?.title ?? "",
+                    "calendarId": e.calendar?.calendarIdentifier ?? "",
+                ]
                 if let endDate = e.endDate {
                     d["end"] = fmt.string(from: endDate)
                 }
