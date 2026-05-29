@@ -1,5 +1,32 @@
 # Changelog — Team Recorder
 
+## v1.1.0 — 2026-05-29
+
+### Compact recordings
+
+- AAC encoder lowered to 16 kHz mono / 32 kbps — ASR-optimised (Whisper/NotebookLM)
+- ~3× smaller files (~14 MB/hr vs ~43 MB/hr); no transcript quality regression
+- `kSampleRate` constant used in three places (AAC settings, mic resampling, SCK delivery rate) — single-constant change
+
+### Per-user calendar picker
+
+- `CalendarEventBridge`: new `trackedCalendarIds` UserDefaults allowlist (`nil` = all, `[]` = explicit zero-selection, `[ids]` = filter)
+- Stale IDs silently ignored at query time — never auto-removed during 60s timer ticks (guards against transient Exchange/Google sync outages)
+- Each event dict now includes `calendar` (display name) and `calendarId` (stable identifier) fields
+- New `CalendarsSubmenuDelegate` in `StatusBarController`: dynamic submenu rebuilt on every open; handles no-permission, empty-list, and 9+ calendar states
+
+### Menu bar UX
+
+- `buildMenu()` rewritten: 5 groups, SF Symbol images on all actionable items
+- Status line: colored SF Symbol per state (red = recording, orange = error); all Unicode glyphs removed
+- `toggleWatcher` dims status icon during 0.5s launch gap (microinteraction feedback)
+
+### Tests
+
+- Live smoke test now asserts output file < 200 KB for ~2s recording (catches accidental bitrate revert)
+
+---
+
 ## v1.0.0 — 2026-05-27
 
 First public GitHub release. All changes are packaging and portability — no new recording features.
