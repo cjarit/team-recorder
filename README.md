@@ -21,13 +21,20 @@
 
 > ไม่ต้องใช้ Terminal ไม่ต้อง Homebrew
 
-1. ดาวน์โหลด **TeamRecorderBar-v1.0.0.zip** จาก [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
+1. ดาวน์โหลด **TeamRecorderBar-v1.1.0.zip** จาก [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
 2. แตกไฟล์ zip แล้ว **ลาก `TeamRecorderBar.app` ไปไว้ที่ `/Applications/`**
-3. เปิดครั้งแรก — **คลิกขวา → Open** (ไม่ใช่ดับเบิลคลิก)
+3. เปิดครั้งแรก — macOS จะบล็อกแอป ให้ทำตามขั้นตอนด้านล่าง
 
-   > **ทำไมต้องคลิกขวา?** macOS จะแสดงคำเตือน "ไม่รู้จักผู้พัฒนา" เพราะแอปนี้ไม่ได้ผ่าน Apple notarization<br>
-   > คลิกขวา → เลือก **Open** → กด **Open** ในหน้าต่างที่ขึ้นมา ทำครั้งเดียว<br>
-   > ครั้งต่อไปดับเบิลคลิกได้ตามปกติ
+   **macOS 14 Sonoma:**
+   คลิกขวาที่แอป → **Open** → กด **Open** ในหน้าต่างที่ขึ้นมา ทำครั้งเดียว ครั้งต่อไปดับเบิลคลิกได้ตามปกติ
+
+   **macOS 15 Sequoia:** ปุ่ม Open อาจไม่ขึ้น ให้ทำดังนี้
+   1. พยายามเปิดแอป (จะถูกบล็อก)
+   2. ไปที่ **System Settings → Privacy & Security**
+   3. เลื่อนลงมา จะเห็น *"TeamRecorderBar was blocked"*
+   4. กด **Open Anyway** → ใส่รหัสผ่าน
+
+   > แอปนี้ไม่ได้ผ่าน Apple notarization (หลีกเลี่ยงค่า $99/ปี) — ขั้นตอนข้างต้นเป็น bypass มาตรฐานของ macOS
 
 4. **Setup Guide** จะขึ้นอัตโนมัติ — ให้สิทธิ์ทั้ง 3 ขั้นตอน แล้วกด Finish
 
@@ -110,7 +117,7 @@ Teams Meeting - 14-30_21-05-2026.m4a        ← ไม่พบ calendar event
 Teams Call (Short) - 09-15_21-05-2026.m4a   ← call < 3 นาที
 ```
 
-**Format:** `.m4a` container, AAC 96kbps, mono — system audio + microphone รวมกัน
+**Format:** `.m4a` container, AAC 32 kbps / 16 kHz, mono — system audio + microphone รวมกัน (~14 MB/ชั่วโมง, optimised สำหรับ NotebookLM / Whisper)
 
 ---
 
@@ -148,7 +155,7 @@ recorder/recorder --list-devices
 | `make build-recorder` | rebuild Swift binary (ต้องมี Xcode CLT) |
 | `make menu-bar` | build menu bar app → `menu-bar/.build/TeamRecorderBar.app` |
 | `make menu-bar-install` | build + copy ไปที่ `/Applications/TeamRecorderBar.app` |
-| `make release` | สร้าง `dist/TeamRecorderBar-v1.0.0.zip` พร้อม SHA256 (สำหรับ GitHub Release) |
+| `make release` | สร้าง `dist/TeamRecorderBar-v$(VERSION).zip` พร้อม SHA256 (สำหรับ GitHub Release) |
 | `make uninstall` | ถอนการติดตั้ง: หยุด watcher, ลบ app, ล้าง preferences + runtime state |
 | `make clean-reinstall` | uninstall แล้ว menu-bar-install ใหม่ในขั้นตอนเดียว |
 
@@ -209,7 +216,7 @@ make uninstall
 | Setup Guide ไม่ขึ้น | คลิก menu bar icon → Setup Guide… |
 | ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder ยังไม่ได้รับสิทธิ์ Calendar → เปิด Setup Guide… แล้วให้สิทธิ์ Calendar / Full Access |
 | icon แดงค้าง / Stop แล้วนิ่ง | คลิก menu bar icon → Recover Recorder… แล้วเริ่ม watcher ใหม่ |
-| macOS แจ้งเตือน "ไม่รู้จักผู้พัฒนา" | คลิกขวา → Open → Open (ทำครั้งเดียว) |
+| macOS แจ้งเตือน "ไม่รู้จักผู้พัฒนา" หรือ "TeamRecorderBar was blocked" | **Sonoma:** คลิกขวา → Open → Open / **Sequoia:** System Settings → Privacy & Security → Open Anyway |
 | Setup แจ้ง "App bundle is corrupted" | ลบแอปแล้ว re-download จาก GitHub Releases อีกครั้ง |
 | Setup แจ้ง "Python 3.9+ required" | เปิด Terminal แล้วรัน `xcode-select --install` |
 

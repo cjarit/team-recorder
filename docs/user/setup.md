@@ -11,7 +11,7 @@
 ### Step 1 — Download and install
 
 1. Go to [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
-2. Download **TeamRecorderBar-v1.0.0.zip**
+2. Download **TeamRecorderBar-v1.1.0.zip**
 3. Double-click the zip to extract it
 4. Drag **TeamRecorderBar.app** to your **Applications** folder
 
