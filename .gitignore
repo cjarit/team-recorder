@@ -78,3 +78,8 @@ plan/LESSONS.local.md
 # Local backup graveyard (obsolete artifacts)
 # ────────────────────────────────────────────
 _backup/
+
+# ────────────────────────────────────────────
+# Local presentation / slide assets
+# ────────────────────────────────────────────
+slide-assets/

@@ -222,3 +222,25 @@ make uninstall
 
 ดูรายละเอียดเพิ่มเติม: [docs/user/troubleshooting.md](docs/user/troubleshooting.md)<br>
 คำถามที่พบบ่อย: [docs/user/faq.md](docs/user/faq.md)
+
+---
+
+## Legal & Consent Notice
+
+**Recording consent is your responsibility.**
+
+This tool records system audio from your device. In most jurisdictions — including Thailand under the Personal Data Protection Act B.E. 2562 (PDPA) — recording a conversation that includes other participants requires their prior consent. Recording without consent may violate the PDPA, the Computer Crimes Act B.E. 2550, your organisation's policies, and Microsoft's Terms of Service.
+
+Before using this tool to record any meeting:
+
+1. Inform all participants that the meeting will be recorded.
+2. Obtain their consent before recording begins.
+3. Store and handle recordings in accordance with applicable data protection law.
+
+The authors of this software accept no liability for recordings made without proper consent.
+
+---
+
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or sponsored by Microsoft Corporation. "Microsoft Teams" is a trademark of Microsoft Corporation.

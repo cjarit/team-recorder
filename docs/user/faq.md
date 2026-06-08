@@ -76,3 +76,11 @@ If you re-listen to the recording and the audio sounds compressed, that is expec
 **Can I use this on macOS 13 Ventura or earlier?**
 
 No. Team Recorder requires macOS 14 (Sonoma) or later. This is a hard requirement — the app uses Calendar APIs (EKEventStore full access) that are only stable on macOS 14+.
+
+---
+
+**Is it legal to record meetings with this tool?**
+
+That depends on your jurisdiction and the nature of the meeting. Recording consent requirements vary by country and context — in Thailand, the Personal Data Protection Act (PDPA B.E. 2562) treats voice recordings of identifiable individuals as personal data and requires a lawful basis (typically explicit consent) before collection. Microsoft's Terms of Service also require you to inform and obtain consent from all participants before recording a Teams call.
+
+**You are responsible for obtaining consent from all meeting participants before recording.** A common practice is to state at the start of the meeting that it will be recorded and confirm no one objects. The authors of this software accept no liability for recordings made without proper consent.
