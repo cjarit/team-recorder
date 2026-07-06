@@ -1,5 +1,17 @@
 # Changelog — Team Recorder
 
+## v1.1.1 — 2026-07-06
+
+### Bug fix: Teams auto-detection stopped working after a Teams app update
+
+- Microsoft Teams' 2026-07-03 update (build 26163.407.4839.8659) moved call-media UDP sockets (RTP/STUN/TURN) off the main `MSTeams` process onto a separate `Microsoft Teams ModuleHost` (SlimCore) helper process — the watcher was only checking `MSTeams`, so it never saw enough UDP traffic to count as "in a meeting"
+- `get_teams_pid()` → `get_teams_pids()`: now unions `pgrep -x MSTeams` with `pgrep -f "Microsoft Teams ModuleHost"` and aggregates UDP connections across the whole process family in one `lsof -a -p <pid1,pid2,...>` call
+- No changes to `POLL_INTERVAL`, `STOP_GRACE`, `MIN_DURATION`, or `UDP_MEET_THRESH` — same thresholds, just counted across the right processes now
+- Verified live against a real, active Teams meeting before release
+- 8 new unit tests covering the process-family resolution and the regression scenario (meeting only detectable via the ModuleHost helper)
+
+---
+
 ## v1.1.0 — 2026-05-29
 
 ### Compact recordings

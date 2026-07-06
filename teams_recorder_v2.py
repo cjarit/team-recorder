@@ -57,6 +57,7 @@ STOP_GRACE      = 8    # วินาทีรอก่อน confirm meeting �
 MIN_DURATION    = 180  # วินาที — ต่ำกว่านี้ = accidental call
 UDP_MEET_THRESH = 4    # established UDP ขั้นต่ำที่ถือว่า in meeting
                        # background Teams = 1-2 เส้น, meeting = 4+ (RTP/STUN/TURN)
+                       # นับรวมทั้ง MSTeams + ModuleHost/SlimCore (ดู _resolve_teams_pids)
 # Calendar matching tolerance อยู่ใน find_matching_meeting (±5 นาที interval slack)
 ICAL_BUDDY = (
     os.getenv("ICAL_BUDDY_PATH")
@@ -89,31 +90,53 @@ _sig_stop_requested:  bool = False
 
 # ─── Teams detection ─────────────────────────────────────────
 # คัดลอกจาก v1 ทั้งหมด — อย่าแก้ไข
+# 2026-07-03 Teams update (build 26163.407.4839.8659) ย้าย call-media UDP
+# sockets (RTP/STUN/TURN) ไปที่ "Microsoft Teams ModuleHost" (SlimCore) helper
+# process แยกจาก MSTeams หลัก — เพิ่ม pgrep pattern ที่สองเพื่อ track ด้วย
 
-def get_teams_pid() -> str:
-    """ดึง PID ของ MSTeams แล้ว cache ไว้ — ไม่ต้อง pgrep ทุกรอบ"""
+def _resolve_teams_pids() -> "list[str]":
+    """คืน list PID ของ MSTeams (anchor) + ModuleHost/SlimCore helper (ถ้ามี)"""
+    pids = []
+    r = subprocess.run(["pgrep", "-x", "MSTeams"], capture_output=True, text=True)
+    pids += [p for p in r.stdout.strip().split("\n") if p]
+    r = subprocess.run(["pgrep", "-f", "Microsoft Teams ModuleHost"],
+                        capture_output=True, text=True)
+    pids += [p for p in r.stdout.strip().split("\n") if p and p not in pids]
+    return pids
+
+
+def get_teams_pids() -> "list[str]":
+    """ดึง PID ของ Teams process family แล้ว cache ไว้ — ไม่ต้อง pgrep ทุกรอบ"""
     global _pid_cache
     if _pid_cache:
-        r = subprocess.run(["kill", "-0", _pid_cache], capture_output=True)
-        if r.returncode == 0:
-            return _pid_cache
-    r = subprocess.run(["pgrep", "-x", "MSTeams"], capture_output=True, text=True)
-    _pid_cache = r.stdout.strip().split("\n")[0]
-    return _pid_cache
+        cached = _pid_cache.split(",")
+        if all(subprocess.run(["kill", "-0", p], capture_output=True).returncode == 0
+               for p in cached):
+            return cached
+    pids = _resolve_teams_pids()
+    _pid_cache = ",".join(pids)
+    return pids
+
+
+def get_teams_pid() -> str:
+    """คืน PID หลักของ MSTeams (หรือ PID แรกที่เจอ) — ใช้เป็น cheap "Teams is running" signal"""
+    pids = get_teams_pids()
+    return pids[0] if pids else ""
 
 
 def is_teams_in_meeting() -> bool:
     """
-    ตรวจ established UDP connections ของ Teams เท่านั้น
+    ตรวจ established UDP connections รวมของ Teams process family
+    (MSTeams + ModuleHost/SlimCore)
     - -nP  : ข้าม DNS + port name lookup (เร็วขึ้นมาก)
-    - -a -p: filter เฉพาะ PID นั้น ไม่ต้อง scan ทุก process
+    - -a -p: filter เฉพาะ PID เหล่านั้น ไม่ต้อง scan ทุก process
     """
-    pid = get_teams_pid()
-    if not pid:
+    pids = get_teams_pids()
+    if not pids:
         return False
     try:
         result = subprocess.run(
-            ["lsof", "-nP", "-i", "udp", "-a", "-p", pid],
+            ["lsof", "-nP", "-i", "udp", "-a", "-p", ",".join(pids)],
             capture_output=True, text=True, timeout=5
         )
         count = sum(

@@ -2,7 +2,7 @@ BREW_PYTHON := $(shell /opt/homebrew/bin/brew --prefix python 2>/dev/null)/bin/p
 PYTHON      := $(if $(wildcard $(BREW_PYTHON)),$(BREW_PYTHON),python3)
 MENU_BAR_APP = menu-bar/.build/TeamRecorderBar.app
 DIST_DIR     = dist
-VERSION      = 1.1.0
+VERSION      = 1.1.1
 RELEASE_ZIP  = $(DIST_DIR)/TeamRecorderBar-v$(VERSION).zip
 
 .PHONY: run test setup build-recorder doctor permissions stop index watcher-pyz menu-bar menu-bar-install release icon reset-setup uninstall clean-reinstall

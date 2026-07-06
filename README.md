@@ -21,7 +21,7 @@
 
 > ไม่ต้องใช้ Terminal ไม่ต้อง Homebrew
 
-1. ดาวน์โหลด **TeamRecorderBar-v1.1.0.zip** จาก [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
+1. ดาวน์โหลด **TeamRecorderBar-v1.1.1.zip** จาก [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
 2. แตกไฟล์ zip แล้ว **ลาก `TeamRecorderBar.app` ไปไว้ที่ `/Applications/`**
 3. เปิดครั้งแรก — macOS จะบล็อกแอป ให้ทำตามขั้นตอนด้านล่าง
 

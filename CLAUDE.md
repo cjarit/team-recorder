@@ -186,11 +186,21 @@ STOP_GRACE       = 8    # seconds before confirming meeting ended
 MIN_DURATION     = 180  # seconds — shorter = "Teams Call (Short)" (accidental)
 UDP_MEET_THRESH  = 4    # established UDP connections = in meeting
                         # background Teams = 1-2, active meeting = 4+ (RTP/STUN/TURN)
+                        # counted across MSTeams + ModuleHost/SlimCore (see below)
 DISK_ABORT_MB    = 200  # must match kMinFreeBytes in Swift binary
 DISK_WARN_MB     = 500  # warn early, still start recording
 ```
 
 If UDP false-triggers become an issue: raise `UDP_MEET_THRESH` to 5 or 6. Do not lower it.
+
+**2026-07-03 Teams update (build 26163.407.4839.8659):** New Teams moved call-media
+UDP sockets (RTP/STUN/TURN) off the main `MSTeams` process onto a separate
+`Microsoft Teams ModuleHost --module_name=SlimCore` helper process. `get_teams_pids()`
+in `teams_recorder_v2.py` now unions `pgrep -x MSTeams` with
+`pgrep -f "Microsoft Teams ModuleHost"` and `is_teams_in_meeting()` sums UDP
+connections across the whole family via one `lsof -a -p <pid1,pid2,...>` call. If a
+future Teams update moves media sockets again, add another `pgrep -f` pattern to
+`_resolve_teams_pids()` — the aggregation logic itself doesn't need to change.
 
 ### Swift audio constants (`recorder/Sources/recorder/main.swift`)
 
@@ -230,7 +240,7 @@ Get mic UID: `recorder/recorder --list-devices`
 | Tool | Why | Do not replace with |
 |------|-----|---------------------|
 | `lsof` | Lists open UDP connections by PID | psutil, netstat |
-| `pgrep -x MSTeams` | Finds Teams process | psutil, subprocess alternatives |
+| `pgrep -x MSTeams` + `pgrep -f "Microsoft Teams ModuleHost"` | Finds Teams process family (main shell + SlimCore call-media helper, see above) | psutil, subprocess alternatives |
 | `icalBuddy` | Reads Apple Calendar directly when running via Terminal/`make run` | JXA, AppleScript, caldav |
 | `CalendarEventBridge` (Swift) | TeamRecorderBar reads Calendar via EKEventStore → writes `events-today.json` → Python reads file; avoids Python.framework TCC chain | icalBuddy under the app (TCC attributes request to Python, not the app) |
 | `ScreenCaptureKit` | System audio capture without virtual drivers | BlackHole, soundflower |

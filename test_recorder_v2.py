@@ -135,6 +135,134 @@ def test_check_recorder_ready_returns_true_on_success(monkeypatch, tmp_path):
     assert any("--check" in str(c) for c in calls)
 
 
+# ─── Teams detection tests ─────────────────────────────────────
+# Covers the 2026-07-06 regression: New Teams moved call-media UDP sockets
+# onto a "Microsoft Teams ModuleHost" (SlimCore) helper process, so checking
+# only the main MSTeams PID stopped detecting active meetings.
+
+def _fake_pgrep_lsof(mstteams_pid="", modulehost_pid="", lsof_stdout="", lsof_calls=None):
+    """Build a fake subprocess.run that answers pgrep -x MSTeams,
+    pgrep -f ModuleHost, kill -0, and lsof according to the given fixtures.
+    Records every lsof invocation's args (as a list) into lsof_calls if given.
+    """
+    def fake_run(args, **kw):
+        if args[:2] == ["pgrep", "-x"]:
+            return _completed(stdout=mstteams_pid)
+        if args[:2] == ["pgrep", "-f"]:
+            return _completed(stdout=modulehost_pid)
+        if args[0] == "kill":
+            return _completed(returncode=0)
+        if args[0] == "lsof":
+            if lsof_calls is not None:
+                lsof_calls.append(args)
+            return _completed(stdout=lsof_stdout)
+        return _completed()
+    return fake_run
+
+
+def test_get_teams_pids_single_process_backward_compat(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+    monkeypatch.setattr(v2.subprocess, "run",
+                         _fake_pgrep_lsof(mstteams_pid="111", modulehost_pid=""))
+    assert v2.get_teams_pids() == ["111"]
+    assert v2.get_teams_pid() == "111"
+
+
+def test_get_teams_pids_includes_modulehost_helper(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+    monkeypatch.setattr(v2.subprocess, "run",
+                         _fake_pgrep_lsof(mstteams_pid="111", modulehost_pid="222"))
+    assert v2.get_teams_pids() == ["111", "222"]
+
+
+def test_is_teams_in_meeting_true_when_only_helper_has_udp_sockets(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+    lsof_calls = []
+    lsof_stdout = (
+        "COMMAND PID USER ...\n"
+        "MSTeams 111 u  4u  IPv4 ... 0t0 UDP 1.2.3.4:12345\n"
+        "ModHost 222 u  5u  IPv4 ... 0t0 UDP 1.2.3.4:12346\n"
+        "ModHost 222 u  6u  IPv4 ... 0t0 UDP 1.2.3.4:12347\n"
+        "ModHost 222 u  7u  IPv4 ... 0t0 UDP 1.2.3.4:12348\n"
+        "ModHost 222 u  8u  IPv4 ... 0t0 UDP 1.2.3.4:12349\n"
+    )
+    monkeypatch.setattr(v2.subprocess, "run", _fake_pgrep_lsof(
+        mstteams_pid="111", modulehost_pid="222",
+        lsof_stdout=lsof_stdout, lsof_calls=lsof_calls))
+    assert v2.is_teams_in_meeting() is True
+    assert lsof_calls[-1][-1] == "111,222"
+
+
+def test_is_teams_in_meeting_false_below_threshold(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+    lsof_stdout = (
+        "COMMAND PID USER ...\n"
+        "ModHost 222 u  5u  IPv4 ... 0t0 UDP 1.2.3.4:12346\n"
+        "ModHost 222 u  6u  IPv4 ... 0t0 UDP 1.2.3.4:12347\n"
+        "ModHost 222 u  7u  IPv4 ... 0t0 UDP 1.2.3.4:12348\n"
+    )
+    monkeypatch.setattr(v2.subprocess, "run", _fake_pgrep_lsof(
+        mstteams_pid="111", modulehost_pid="222", lsof_stdout=lsof_stdout))
+    assert v2.is_teams_in_meeting() is False
+
+
+def test_is_teams_in_meeting_no_teams_running(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+    lsof_calls = []
+    monkeypatch.setattr(v2.subprocess, "run", _fake_pgrep_lsof(
+        mstteams_pid="", modulehost_pid="", lsof_calls=lsof_calls))
+    assert v2.is_teams_in_meeting() is False
+    assert lsof_calls == []
+
+
+def test_is_teams_in_meeting_lsof_timeout(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+
+    def fake_run(args, **kw):
+        if args[:2] == ["pgrep", "-x"]:
+            return _completed(stdout="111")
+        if args[:2] == ["pgrep", "-f"]:
+            return _completed(stdout="")
+        if args[0] == "lsof":
+            raise subprocess.TimeoutExpired(cmd=args, timeout=5)
+        return _completed()
+
+    monkeypatch.setattr(v2.subprocess, "run", fake_run)
+    assert v2.is_teams_in_meeting() is False
+
+
+def test_get_teams_pid_cache_reused_when_all_pids_alive(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "111,222")
+    pgrep_calls = []
+
+    def fake_run(args, **kw):
+        if args[0] == "kill":
+            return _completed(returncode=0)
+        if args[0] == "pgrep":
+            pgrep_calls.append(args)
+        return _completed()
+
+    monkeypatch.setattr(v2.subprocess, "run", fake_run)
+    assert v2.get_teams_pids() == ["111", "222"]
+    assert pgrep_calls == []
+
+
+def test_get_teams_pid_cache_invalidated_when_any_pid_dies(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "111,222")
+
+    def fake_run(args, **kw):
+        if args[0] == "kill":
+            return _completed(returncode=1 if args[-1] == "222" else 0)
+        if args[:2] == ["pgrep", "-x"]:
+            return _completed(stdout="111")
+        if args[:2] == ["pgrep", "-f"]:
+            return _completed(stdout="333")
+        return _completed()
+
+    monkeypatch.setattr(v2.subprocess, "run", fake_run)
+    assert v2.get_teams_pids() == ["111", "333"]
+
+
 # ─── Recording lifecycle tests ────────────────────────────────
 
 def test_start_recording_v2_sends_start_command(monkeypatch, tmp_path):
