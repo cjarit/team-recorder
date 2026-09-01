@@ -161,6 +161,8 @@ CAL_MISSING_ICALBUDDY = "missing_icalbuddy"
 CAL_TIMEOUT           = "timeout"
 CAL_ERROR             = "error"
 CAL_FROM_APP          = "ok_from_app"   # calendar data from CalendarEventBridge (TeamRecorderBar)
+CAL_FROM_OCR          = "ok_from_ocr"   # ชื่อ meeting จาก screen OCR (calendar ไม่มีชื่อให้)
+CAL_OCR_FAILED        = "ocr_failed"    # ลอง OCR แล้วแต่ไม่พบ live meeting window
 
 # icalBuddy stderr/stdout keywords that mean "TCC denied Calendar access".
 # Mirrored from Swift PermissionChecker.runIcalBuddyProbe.
@@ -352,6 +354,37 @@ def find_matching_meeting(start_time: datetime, meetings: list) -> "str | None":
     return best_name
 
 
+def get_meeting_title_from_screen() -> "str | None":
+    """OCR ชื่อ meeting จาก Teams call toolbar ผ่าน `recorder --meeting-title`
+    Fallback เมื่อ calendar ไม่มีชื่อให้ (เช่น org policy บล็อก Exchange sync/publish
+    calendar แบบมี title). Binary เท่านั้นที่ทำ screen capture — เลี่ยงปัญหา TCC
+    attribution เดียวกับที่ icalBuddy เจอตอนรันผ่าน Python (ดู CLAUDE.md Calendar architecture)
+    Returns: ชื่อ meeting ที่ OCR ได้ หรือ None ถ้าไม่พบ live meeting window
+    """
+    binary = find_recorder_binary()
+    if not os.path.exists(binary):
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "--meeting-title"],
+            capture_output=True, text=True, timeout=25,
+        )
+    except subprocess.TimeoutExpired:
+        log("[WARN] recorder --meeting-title timeout")
+        return None
+    except Exception as e:
+        log(f"[WARN] recorder --meeting-title failed: {e}")
+        return None
+
+    if result.returncode != 0:
+        token = result.stderr.strip() or "unknown error"
+        log(f"[INFO] Screen OCR ไม่พบชื่อ meeting: {token}")
+        return None
+
+    title = result.stdout.strip()
+    return title or None
+
+
 def fallback_reason_for(calendar_status: "str | None") -> str:
     """Human-readable reason for falling back to the 'Teams Meeting' name.
     Surfaced in status.json → lastFallbackReason so the menu bar can show it.
@@ -364,6 +397,7 @@ def fallback_reason_for(calendar_status: "str | None") -> str:
         CAL_OK_EVENTS:         "no event matched start time (±5 min)",
         CAL_FROM_APP:          "no event matched start time (±5 min)",
         CAL_ERROR:             "icalBuddy error",
+        CAL_OCR_FAILED:        "no calendar title and no live meeting window detected via screen OCR",
     }.get(calendar_status or "", "calendar lookup unavailable")
 
 
@@ -905,6 +939,15 @@ def start_recording_v2(proc: "subprocess.Popen",
     meeting_name = find_matching_meeting(start_time, meetings)
     if meeting_name:
         log("📅 Meeting: " + meeting_name)
+    else:
+        # Calendar ไม่มีชื่อ → ลอง OCR จาก Teams call toolbar (screen)
+        ocr_name = get_meeting_title_from_screen()
+        if ocr_name:
+            meeting_name = ocr_name
+            cal_status = CAL_FROM_OCR
+            log("🖥  Screen OCR meeting: " + meeting_name)
+        else:
+            cal_status = CAL_OCR_FAILED
 
     log("▶  Recording started")
     write_status("recording", meeting_name=meeting_name,
@@ -946,7 +989,13 @@ def stop_recording_v2(proc: "subprocess.Popen",
     response = _readline_timeout(proc.stdout, 30.0)
     if response == "STOPPED_OK":
         log("■  Recording stopped")
-        if session.get("meeting_name") is None and session.get("calendar_status") != CAL_NO_ACCESS:
+        # หมายเหตุ: ไม่ retry screen OCR ตรงนี้ — ตอน stop meeting จบไปแล้ว (ผ่าน
+        # STOP_GRACE) toolbar ที่มี call timer จะหายไปด้วย ทำให้ confidence gate ใน
+        # runMeetingTitle() แทบไม่มีทางผ่านได้เลย ต่างจาก calendar retry ที่ข้อมูล
+        # อาจมาถึงช้าจริงๆ ระหว่างนั้น — OCR retry ที่ stop จะเสียเวลาบล็อก main loop
+        # (รวมถึง SIGINT/SIGTERM handler) โดยแทบไม่มีโอกาสสำเร็จ จึงข้ามไปเลย
+        if (session.get("meeting_name") is None
+                and session.get("calendar_status") != CAL_NO_ACCESS):
             _meetings_cache["date"] = None
             fresh_status, fresh_meetings = _get_today_meetings_cached()
             retry_name = find_matching_meeting(session["start_time"], fresh_meetings)
@@ -1152,6 +1201,9 @@ def run_doctor() -> int:
            "ยืนยันไม่ได้จนกว่าจะลองอัดจริง — ถ้าอัดไม่ขึ้น: make permissions")
     _check("Microphone permission", "skip",
            "ยืนยันแบบ read-only ไม่ได้ — ถ้าเสียง mic เงียบ: make permissions")
+    _check("Screen OCR meeting-title fallback", "skip",
+           "ยืนยันไม่ได้แบบ read-only (ต้อง OCR หน้าจอจริง) — ใช้เมื่อ Calendar ไม่มีชื่อ; "
+           "ทดสอบได้ตอนอยู่ใน Teams meeting จริง: recorder/recorder --meeting-title")
 
     print("-" * 52)
     if failures:

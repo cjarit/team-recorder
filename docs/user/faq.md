@@ -19,9 +19,19 @@ The app restarts the watcher automatically and remembers your choice.
 
 **Why does the app need Calendar permission?**
 
-Team Recorder reads your calendar to name the recording after the meeting title. Without it, every recording is named "Teams Meeting" plus the time.
+Team Recorder reads your calendar to name the recording after the meeting title. Without it, the app falls back to reading the title off the Teams call window on screen (needs Screen Recording); if that also fails, recordings are named "Teams Meeting" plus the time.
 
 When you grant **Full Access**, the app writes today's events to a private file (`~/Library/Application Support/Team Recorder/events-today.json`). The recorder reads that file — there are no extra Calendar prompts during recording.
+
+---
+
+**My organization blocked Calendar sync — why did meeting names stop working?**
+
+Some organizations disable Exchange account sync to Apple Calendar, and separately lock Outlook's calendar-sharing feature to "free/busy only" (no meeting titles, even if you try to publish your own calendar). This is a deliberate policy set by your IT admin — there's no setting on your Mac that fixes it.
+
+Team Recorder handles this automatically as of v1.2.0: when Calendar has no title, it reads the meeting name directly off the Teams call window on screen instead (this only needs Screen Recording permission, which the app already uses to capture system audio). Nothing is sent anywhere — it reads your own screen locally, the same way the app already captures your meeting audio.
+
+If you'd still rather have proper calendar naming, ask your IT admin whether calendar sharing can be set to "titles and locations" instead of "free/busy only" — that's the setting that's blocked, not anything Team Recorder can control.
 
 ---
 
@@ -47,11 +57,13 @@ The only system requirement is **macOS 14 (Sonoma) or later**.
 
 **The recording is named "Teams Meeting" — what's wrong?**
 
-Usually a Calendar permission issue. Try these in order:
+Try these in order:
 
 1. Click the menu bar icon → **Setup Guide…** → go to the Calendar step and grant **Full Access**
 2. If it shows "Calendar: OK" in Permissions, the bridge file may be stale — quit and reopen the app to refresh it
-3. If the meeting had no corresponding calendar event within ±5 minutes of the recording, the fallback name is expected
+3. If the meeting had no corresponding calendar event within ±5 minutes of the recording, the app tries reading the title off the Teams call window instead — check Screen Recording is granted, and that the Teams window wasn't minimized during the meeting
+4. If your organization blocks Calendar entirely, see "My organization blocked Calendar sync" above — the screen-reading fallback should still work as long as Screen Recording is granted
+5. If none of the above apply, the fallback name is expected
 
 ---
 

@@ -119,6 +119,7 @@ recorder --check              # prints OK + arch + macOS version, exits 0/1
 recorder --list-devices       # UID<TAB>name [input/output], one per line
 recorder --device <UID>       # override mic input device (system audio unaffected)
 recorder --request-permission # trigger Screen Recording dialog (may open under Terminal)
+recorder --meeting-title       # OCR the live Teams call window; prints title to stdout, exits 0/1
 ```
 
 ### Error tokens (stderr)
@@ -128,6 +129,10 @@ recorder --request-permission # trigger Screen Recording dialog (may open under 
 | `ERROR: already_recording` | `start` sent while already recording |
 | `ERROR: disk_space_low` | < 200 MB free on output drive |
 | `ERROR: screen_recording_permission_denied` | SCK permission not granted |
+| `ERROR: no_teams_windows_found` | `--meeting-title`: Teams isn't running / no window ≥400×400 |
+| `ERROR: no_live_meeting_detected` | `--meeting-title`: Teams windows found, none show a live call timer |
+| `ERROR: teams_window_lookup_failed` | `--meeting-title`: `SCShareableContent` fetch failed for a reason other than permission |
+| `ERROR: meeting_title_requires_macos_14` | `--meeting-title` called on macOS < 14 (ScreenCaptureKit single-shot API unavailable) |
 
 ---
 
@@ -174,6 +179,7 @@ Key files:
 - **Threading note:** the restart path (`handleSCKStreamStop`) keeps all SCK state mutations on main. The normal start/stop path (`startSCK`, `stopSCK`) runs on the stdin protocol queue (background) — pre-existing behaviour, not introduced by Phase 2B.
 - `startCapture` error captured and rethrown after `sema.wait()`
 - `emit(_:)` — uses `Darwin.write()` for unbuffered stdout (not `print()`)
+- `runMeetingTitle()` — `--meeting-title` CLI mode (v1.2.0). Touches `NSApplication.shared` once first — `SCScreenshotManager.captureImage` (single-shot capture) crashes with `CGS_REQUIRE_INIT` in a bare CLI process otherwise; the continuous `SCStream` recording path doesn't need this. Enumerates every Teams window (New Teams can have Chat/Calendar/Meeting open simultaneously), captures each via `SCContentFilter(desktopIndependentWindow:)` — never coordinate-based capture, proven unsafe (captures whatever window is on-screen at that rect, not the intended one) — crops the top 14% (toolbar band), runs Vision OCR (`en-US` + `th-TH`), and only accepts a window whose OCR text includes a live call timer (`HH:MM:SS` pattern) as the real meeting window. `extractMeetingTitle()` picks the longest OCR line positioned strictly above the timer's row (the title row is always above the timer+toolbar-icons row) — position-based, not an English word list, so it works regardless of the Teams UI's display language and doesn't misclassify numeric or short titles as noise.
 
 ---
 
@@ -217,6 +223,13 @@ If Thai transcription accuracy degrades at 32 kbps: change `kBitrate` to `48_000
 Calendar matching is **not** a tunable constant — `find_matching_meeting()` matches a
 recording to a calendar event by interval containment with a fixed ±5-minute slack.
 
+**Title resolution order (v1.2.0):** Calendar (`find_matching_meeting()`) → Screen OCR
+(`get_meeting_title_from_screen()`, calls `recorder --meeting-title`) → `"Teams Meeting"`
+placeholder. OCR only runs when calendar returns no match, at both recording-start and
+the existing stop-time retry. This exists because calendar titles can be entirely
+unavailable by org policy (Exchange sync blocked, calendar-publish locked to
+free/busy-only) — see `plan/DECISIONS.md`, 2026-09-01.
+
 `DISK_ABORT_MB = 200` **must stay in sync** with `kMinFreeBytes` in `main.swift`. If you change one, change both.
 
 ---
@@ -243,12 +256,15 @@ Get mic UID: `recorder/recorder --list-devices`
 | `pgrep -x MSTeams` + `pgrep -f "Microsoft Teams ModuleHost"` | Finds Teams process family (main shell + SlimCore call-media helper, see above) | psutil, subprocess alternatives |
 | `icalBuddy` | Reads Apple Calendar directly when running via Terminal/`make run` | JXA, AppleScript, caldav |
 | `CalendarEventBridge` (Swift) | TeamRecorderBar reads Calendar via EKEventStore → writes `events-today.json` → Python reads file; avoids Python.framework TCC chain | icalBuddy under the app (TCC attributes request to Python, not the app) |
-| `ScreenCaptureKit` | System audio capture without virtual drivers | BlackHole, soundflower |
+| `ScreenCaptureKit` | System audio capture without virtual drivers; also powers `--meeting-title` window capture | BlackHole, soundflower |
 | `SMAppService.mainApp` | macOS 13.2+ Login Item (min target is now 14) — menu bar toggle, no plist editing | LaunchAgent .plist, systemd, cron |
+| `Vision` (`VNRecognizeTextRequest`) | OCRs the Teams call toolbar for `--meeting-title` when calendar has no title | Tesseract, other OCR libs — no bundling/model-download needed, ships with macOS |
 
 **Why not JXA/AppleScript for calendar?** JXA hangs when Calendar app is closed. icalBuddy reads EventKit store directly — confirmed production issue, do not revert.
 
 **Calendar architecture (TeamRecorderBar):** `Python.framework` has its own bundle ID (`org.python.python`). macOS TCC uses the nearest ancestor with a bundle ID as the responsible app, so Python claims that role — icalBuddy's Calendar request is attributed to Python, which cannot be granted Calendar via System Settings UI. Fix: TeamRecorderBar reads Calendar via its own `EKEventStore` grant, writes `APP_SUPPORT_DIR/events-today.json`, Python reads the file (no TCC needed). icalBuddy remains the fallback for `make run` / Terminal contexts where TCC sees Terminal.
+
+**Calendar can be entirely unavailable by org policy, not just by permission.** Some orgs block Exchange account sync to Apple Calendar *and* lock Outlook's "Publish a calendar" sharing level to free/busy-only (no titles/locations option in the permissions dropdown at all — a tenant-level Exchange sharing policy, confirmed by testing, not a device setting). No client-side workaround exists for this. This is why the Screen OCR fallback (`--meeting-title`, see Tuned Constants above) exists — it's not redundant with Calendar, it's the path for users whose org blocks calendar title sharing entirely.
 
 **Calendar allowlist (per-user filter):** Users can limit which calendars are scanned for meeting names via the "Tracked Calendars" submenu in the menu bar. The allowlist is persisted as `trackedCalendarIds` (`[String]`) in `UserDefaults`. `nil` (key absent) = track all calendars. The filter is applied in `CalendarEventBridge.writeEventsIfAuthorized()` before building `events-today.json`. Stale identifiers (from deleted calendars) are silently ignored at query time — **never auto-removed** during timer cycles to avoid falsely wiping the allowlist during transient account sync outages. Each event dict includes `"calendar"` (display name) and `"calendarId"` (stable `EKCalendar.calendarIdentifier`) fields for future use. Python ignores these fields — filtering is fully upstream in Swift.
 
@@ -263,7 +279,7 @@ Inline Thai comments are team knowledge from real testing sessions. They explain
 ## Test Coverage
 
 ```
-test_recorder_v2.py — 99 passed, 3 skipped
+test_recorder_v2.py — 116 passed, 3 skipped
 ```
 
 The 3 skipped tests are `@LIVE_SMOKE` — require a real binary and Screen Recording permission. Run with `RUN_LIVE_SMOKE=1 make test`.
@@ -290,6 +306,8 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | `watcher.pyz not found` at launch | App bundle missing `watcher.pyz` — build artifact not embedded | `make menu-bar` to rebuild the bundle |
 | `ModuleNotFoundError: No module named 'dotenv'` via `make run` | python-dotenv not installed in the active Python | `make setup` then retry |
 | Recording named "Teams Meeting" when using TeamRecorderBar | Calendar not granted to TeamRecorderBar, or bridge file stale | System Settings → Privacy & Security → Calendars → enable TeamRecorderBar; then menu bar → Permissions → "Calendar: OK" should appear |
+| Recording still named "Teams Meeting" even with no calendar issue (v1.2.0+) | Screen OCR fallback also found nothing — Teams window was minimized/fully occluded (occlusion is fine, minimized is not — SCK can't capture a minimized window's content), no live call timer visible, or Screen Recording permission not granted to `recorder` | Check `session.log` for `[INFO] Screen OCR ไม่พบชื่อ meeting: <token>`; confirm Screen Recording permission (`make doctor`); ensure the Teams call window isn't minimized during the meeting |
+| Screen OCR returns the wrong window's title (e.g. "Calendar" instead of the meeting name) | New Teams UI update moved/removed the call timer from the toolbar, breaking the confidence gate in `runMeetingTitle()` | Same fix pattern as the 2026-07-03 UDP-port change: check what the toolbar looks like now, adjust the timer regex or window-selection heuristic in `recorder/main.swift`, rebuild |
 
 ---
 

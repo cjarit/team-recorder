@@ -20,7 +20,9 @@ Teams meeting detected (UDP ≥ 4)
   → Binary writes AAC .m4a; emits "STARTED" on stdout
   → Python polls UDP; on drop waits STOP_GRACE=8s (prevents false stops)
   → Python sends "stop" stdin → binary emits "STOPPED_OK" (file fully flushed)
-  → Python renames file using calendar title from events-today.json (app bridge) or icalBuddy (Terminal fallback)
+  → Python renames file using: calendar title from events-today.json (app bridge) or icalBuddy (Terminal fallback)
+    → if no calendar title: OCR'd title from `recorder --meeting-title` (ScreenCaptureKit window capture + Vision)
+    → if neither: "Teams Meeting" placeholder
 ```
 
 ## Key design decisions
@@ -28,7 +30,8 @@ Teams meeting detected (UDP ≥ 4)
 - **Python stays the brain** — no recording logic in Swift menu bar app
 - **STOPPED_OK is the sync point** — Python only renames after confirming flush; never rename on timeout
 - **Calendar bridge** — TeamRecorderBar writes `APP_SUPPORT_DIR/events-today.json` via EKEventStore; Python reads the file when `TEAM_RECORDER_APP=1` (set by WatcherManager). icalBuddy is the fallback for `make run` / Terminal contexts. This bypasses the Python.framework TCC chain that prevents icalBuddy from accessing Calendar when launched by the app.
-- **ScreenCaptureKit** — system audio without virtual drivers; requires app relaunch after granting permission
+- **ScreenCaptureKit** — system audio without virtual drivers; requires app relaunch after granting permission. Also powers `recorder --meeting-title` (v1.2.0): captures the live Teams call window for OCR when calendar has no title — same Screen Recording grant, no new permission needed
+- **Vision (`VNRecognizeTextRequest`)** — OCRs the Teams call toolbar for `--meeting-title`; ships with macOS, no bundled model
 - **watcher_path.txt + python_path.txt** — absolute paths to `teams_recorder_v2.py` and the Homebrew Python interpreter, embedded at build time by `make menu-bar`; both are machine-specific so rebuild if the repo moves or Homebrew Python changes. Pinning the interpreter prevents Launch Services from resolving `env python3` to system Python 3.9 (which lacks `python-dotenv`)
 - **SCK sleep/wake recovery** — `handleSCKStreamStop` restarts the ScreenCaptureKit stream in-place after display reconnect or sleep/wake; no recording gap
 - **`status.json` as app contract** — menu bar app never parses logs; reads only `status.json`; atomic writes via `os.replace` prevent partial reads

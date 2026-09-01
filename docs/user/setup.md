@@ -11,9 +11,16 @@
 ### Step 1 — Download and install
 
 1. Go to [GitHub Releases](https://github.com/cjarit/team-recorder/releases)
-2. Download **TeamRecorderBar-v1.1.0.zip**
+2. Download **TeamRecorderBar-v1.2.0.zip**
 3. Double-click the zip to extract it
-4. Drag **TeamRecorderBar.app** to your **Applications** folder
+4. Drag **TeamRecorderBar.app** to your **Applications** folder — if you already have an older version installed, macOS will ask to replace it; confirm
+
+### Upgrading from an earlier version
+
+1. **Quit TeamRecorderBar first** (menu bar icon → Quit) — don't replace the app while it's running
+2. Follow Step 1 above; when Finder asks to replace the existing app, confirm
+3. Reopen the app. There is no in-place auto-update — always re-download and replace the `.app`
+4. If macOS re-prompts for Screen Recording, Microphone, or Calendar permission after the upgrade, that's expected — grant them again the same way as first-time setup (Step 3 below)
 
 ### Step 2 — Open for the first time
 
@@ -30,13 +37,13 @@ The Setup Guide opens automatically on first launch. Follow the three steps:
 
 | Step | Permission | Why |
 |------|------------|-----|
-| 1 | **Screen Recording** | Captures system audio from Teams |
+| 1 | **Screen Recording** | Captures system audio from Teams; also lets the app read the meeting title off the Teams call window when Calendar can't provide one |
 | 2 | **Microphone** | Records your voice |
 | 3 | **Calendar** | Names recordings after the meeting title |
 
 **Screen Recording note:** macOS requires a relaunch after granting this permission. The Setup Guide will show a "Relaunch App" button — click it, then reopen the app and proceed.
 
-**Calendar note:** Choose **Full Access** (not Write Only) when prompted. The app writes today's events to a file; the recorder reads it without a second permission prompt.
+**Calendar note:** Choose **Full Access** (not Write Only) when prompted. The app writes today's events to a file; the recorder reads it without a second permission prompt. If your organization blocks Calendar entirely (some do — Exchange sync disabled, calendar sharing locked to free/busy only), you can skip this step: recordings will be named from the Teams call window instead, as long as Screen Recording is granted.
 
 **Tracked Calendars:** After setup, you can choose which calendars are scanned for meeting names. Click the menu bar icon → **Tracked Calendars** and check or uncheck individual calendars. Unchecked calendars are excluded from matching — useful if personal or holiday calendars pollute recording names. Default is all calendars tracked. This is a per-user setting saved locally.
 
@@ -79,11 +86,11 @@ Then reopen the app from `/Applications/`.
 
 | Permission | Where to grant | Why needed |
 |------------|----------------|------------|
-| Screen Recording | System Settings → Privacy & Security → Screen Recording | Captures system audio from Teams |
+| Screen Recording | System Settings → Privacy & Security → Screen Recording | Captures system audio from Teams; also reads the meeting title off the Teams call window if Calendar can't |
 | Microphone | System Settings → Privacy & Security → Microphone | Records your voice |
 | Calendar — Full Access | System Settings → Privacy & Security → Calendars | Names recordings after meeting title |
 
-All three are required for full functionality. Calendar is optional — if denied, recordings are named "Teams Meeting" instead of the meeting title.
+Screen Recording and Microphone are required for full functionality. Calendar is optional — if denied or blocked by your organization, recordings are named from the Teams call window instead (needs Screen Recording), falling back to "Teams Meeting" only if that also fails.
 
 ---
 

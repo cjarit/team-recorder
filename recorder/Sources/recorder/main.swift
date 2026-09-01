@@ -15,12 +15,16 @@
 //   --list-devices       prints tab-separated: UID<TAB>name [type]
 //   --device <UID>       override mic input device only (system audio uses default)
 //   --request-permission triggers Screen Recording permission dialog
+//   --meeting-title      OCRs the live Teams call window; prints the meeting
+//                        title to stdout on success (exit 0), or nothing +
+//                        an ERROR token to stderr on failure (exit 1)
 
 import AppKit
 import AVFoundation
 import CoreAudio
 import Foundation
 import ScreenCaptureKit
+import Vision
 
 // ─── Audio output parameters ──────────────────────────────────
 // ปรับสำหรับ ASR (Whisper/NotebookLM): 16 kHz mono 32 kbps ≈ 3.5 MB/hr
@@ -795,6 +799,151 @@ final class RecorderEngine {
     }
 }
 
+// ─── CLI: --meeting-title ─────────────────────────────────────
+// Calendar sourcing can be unavailable (org policy blocks Exchange sync/
+// calendar publishing with titles). Fallback: read the meeting name straight
+// off the Teams call toolbar via ScreenCaptureKit window capture + Vision OCR.
+//
+// วิธีทำงาน: New Teams เปิดได้หลาย window พร้อมกัน (Chat, Calendar, Meeting)
+// เราจึง capture ทุก window ของ Teams แล้วดูว่า window ไหนมี call timer
+// (HH:MM:SS) ปรากฏ — window นั้นคือ meeting ที่กำลัง live จริง ไม่ใช่ Chat/Calendar
+//
+// ต้อง capture ด้วย SCContentFilter(desktopIndependentWindow:) เท่านั้น — ห้ามใช้
+// screencapture -R ตาม screen coordinate เพราะถ้า window ถูกบัง/ย้ายที่ จะได้ pixel
+// ของ app อื่นมาแทน (พิสูจน์แล้วจากการทดสอบจริงว่า capture ผิด window ได้)
+private let kMeetingTitleTimerPattern = try! NSRegularExpression(
+    pattern: "^\\d{1,2}:\\d{2}(:\\d{2})?$")
+
+/// One OCR'd text line + its vertical position (Vision normalized coords,
+/// origin bottom-left — larger midY = higher up in the image).
+private struct OCRLine {
+    let text: String
+    let midY: CGFloat
+}
+
+private func isTimerLine(_ text: String) -> Bool {
+    kMeetingTitleTimerPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+}
+
+private func meetingTitleHasTimer(_ lines: [OCRLine]) -> Bool {
+    lines.contains { isTimerLine($0.text) }
+}
+
+@available(macOS 14.0, *)
+private func fetchTeamsWindows() throws -> [SCWindow] {
+    let sema = DispatchSemaphore(value: 0)
+    var windows: [SCWindow] = []
+    var capturedError: Error?
+    SCShareableContent.getExcludingDesktopWindows(
+        false, onScreenWindowsOnly: true
+    ) { content, error in
+        if let content {
+            windows = content.windows.filter {
+                let name = $0.owningApplication?.applicationName ?? ""
+                let bid  = $0.owningApplication?.bundleIdentifier ?? ""
+                return (bid.lowercased().contains("teams") || name.lowercased().contains("teams"))
+                    && $0.frame.width > 400 && $0.frame.height > 400
+            }
+        }
+        capturedError = error
+        sema.signal()
+    }
+    if sema.wait(timeout: .now() + 10) == .timedOut {
+        throw RecorderError.screenRecordingPermissionDenied
+    }
+    if let err = capturedError { throw err }
+    return windows
+}
+
+@available(macOS 14.0, *)
+private func captureTopStrip(of window: SCWindow) async throws -> CGImage? {
+    let filter = SCContentFilter(desktopIndependentWindow: window)
+    let config = SCStreamConfiguration()
+    config.width       = Int(window.frame.width) * 2
+    config.height      = Int(window.frame.height) * 2
+    config.showsCursor = false
+    let full = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+    let stripHeight = Int(CGFloat(full.height) * 0.14)  // toolbar band only — avoids OCR'ing video/chat content
+    return full.cropping(to: CGRect(x: 0, y: 0, width: full.width, height: stripHeight))
+}
+
+private func recognizedLines(in image: CGImage) throws -> [OCRLine] {
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel      = .accurate
+    request.usesLanguageCorrection = true
+    request.recognitionLanguages  = ["en-US", "th-TH"]
+    try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+    return (request.results ?? []).compactMap { obs in
+        guard let text = obs.topCandidates(1).first?.string else { return nil }
+        return OCRLine(text: text, midY: obs.boundingBox.midY)
+    }
+}
+
+/// Meeting title = longest OCR line strictly above the timer's row.
+/// ใช้ตำแหน่งแทน word-list ภาษาอังกฤษ — title อยู่แถวบนสุดเสมอ ส่วน timer + toolbar
+/// icons (Chat/People/Camera/...) อยู่แถวเดียวกันด้านล่าง ไม่ว่า Teams UI จะตั้งภาษาอะไร
+/// (word-list เดิมพังถ้า Teams UI เป็นภาษาไทย — ทีมนี้เป็นทีมไทย จึงเป็นไปได้จริง)
+private func extractMeetingTitle(from lines: [OCRLine]) -> String? {
+    guard let timerLine = lines.first(where: { isTimerLine($0.text) }) else { return nil }
+    let candidates = lines.filter { line in
+        guard line.midY > timerLine.midY + 0.02 else { return false }  // strictly above the timer's row
+        let trimmed = line.text.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > 1  // strips lone decorative glyphs (•) picked up above the title
+    }
+    return candidates.max(by: { $0.text.count < $1.text.count })?.text
+}
+
+func runMeetingTitle() {
+    guard #available(macOS 14.0, *) else {
+        fputs("ERROR: meeting_title_requires_macos_14\n", stderr)
+        exit(1)
+    }
+    // SCScreenshotManager (single-shot capture) crashes with CGS_REQUIRE_INIT
+    // in a bare CLI process unless something touches NSApplication first —
+    // confirmed via PoC. The persistent SCStream path (recording) doesn't need this.
+    _ = NSApplication.shared
+    NSApplication.shared.setActivationPolicy(.accessory)
+
+    let windows: [SCWindow]
+    do {
+        windows = try fetchTeamsWindows()
+    } catch RecorderError.screenRecordingPermissionDenied {
+        fputs("ERROR: screen_recording_permission_denied\n", stderr)
+        exit(1)
+    } catch {
+        fputs("ERROR: teams_window_lookup_failed — \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+    guard !windows.isEmpty else {
+        fputs("ERROR: no_teams_windows_found\n", stderr)
+        exit(1)
+    }
+
+    let sema = DispatchSemaphore(value: 0)
+    var found: String?
+    Task {
+        for window in windows {
+            guard let strip = try? await captureTopStrip(of: window) else { continue }
+            guard let lines = try? recognizedLines(in: strip) else { continue }
+            guard meetingTitleHasTimer(lines) else { continue }  // not the live call window
+            if let title = extractMeetingTitle(from: lines) {
+                found = title
+                break
+            }
+        }
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 20)
+
+    if let title = found {
+        emit(title)
+        exit(0)
+    } else {
+        fputs("ERROR: no_live_meeting_detected\n", stderr)
+        exit(1)
+    }
+}
+
 // ─── CLI: --check ─────────────────────────────────────────────
 func runCheck() {
     let arch: String
@@ -945,6 +1094,9 @@ case argv.contains("--list-devices"):
     runListDevices(); exit(0)
 case argv.contains("--request-permission"):
     runRequestPermission()      // calls exit() internally
+    exit(1)                     // unreachable; satisfies compiler
+case argv.contains("--meeting-title"):
+    runMeetingTitle()           // calls exit() internally
     exit(1)                     // unreachable; satisfies compiler
 default:
     runStdinProtocol()

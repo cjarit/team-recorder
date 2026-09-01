@@ -6,7 +6,7 @@
 
 1. Open TeamRecorderBar from `/Applications/` (or use Launch at Login)
 2. Join your Teams meeting — recording starts automatically
-3. Leave the meeting — recording stops and is named after the calendar event
+3. Leave the meeting — recording stops and is named after the meeting title (from your calendar, or read off the Teams call window if the calendar has no title)
 4. Click the saved-recording notification to reveal the file in Finder, or find recordings at `~/Documents/Teams Recording/`
 
 ## Menu bar icons
@@ -30,6 +30,9 @@
 
 ```
 Sprint Planning - 10-00_21-05-2026.m4a          ← matched calendar event
-Teams Meeting - 14-30_21-05-2026.m4a            ← no calendar event found
+DX Lead Discuss & Operations - 11-00_21-05-2026.m4a  ← no calendar event, but read off the Teams call window
+Teams Meeting - 14-30_21-05-2026.m4a            ← no calendar event AND no title readable from screen
 Teams Call (Short) - 09-15_21-05-2026.m4a       ← call under 3 minutes
 ```
+
+**Naming order:** calendar event → Teams call window (screen) → `"Teams Meeting"` placeholder. The screen fallback needs the Teams call window visible on screen (not minimized) at some point during the recording — it doesn't need to be the frontmost window, just not minimized.

@@ -301,6 +301,41 @@ def test_start_recording_v2_captures_meeting_name(monkeypatch, tmp_path):
     assert result["meeting_name"] == "Design Sync"
 
 
+def test_start_recording_v2_falls_back_to_screen_ocr(monkeypatch, tmp_path):
+    """No calendar match → OCR fallback supplies the meeting name."""
+    proc = _make_proc(stdout_lines=["STARTED"])
+    monkeypatch.setattr(v2, "check_disk_space", lambda _: True)
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
+    monkeypatch.setattr(v2, "find_matching_meeting", lambda *a: None)
+    monkeypatch.setattr(v2, "get_meeting_title_from_screen",
+                         lambda: "DX Lead Discuss & Operations")
+    v2._meetings_cache["date"] = None
+
+    result = v2.start_recording_v2(proc, str(tmp_path))
+
+    assert result is not None
+    assert result["meeting_name"] == "DX Lead Discuss & Operations"
+    assert result["calendar_status"] == v2.CAL_FROM_OCR
+
+
+def test_start_recording_v2_ocr_also_fails(monkeypatch, tmp_path):
+    """No calendar match AND no OCR match → meeting_name stays None, status records both failures."""
+    proc = _make_proc(stdout_lines=["STARTED"])
+    monkeypatch.setattr(v2, "check_disk_space", lambda _: True)
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
+    monkeypatch.setattr(v2, "find_matching_meeting", lambda *a: None)
+    monkeypatch.setattr(v2, "get_meeting_title_from_screen", lambda: None)
+    v2._meetings_cache["date"] = None
+
+    result = v2.start_recording_v2(proc, str(tmp_path))
+
+    assert result is not None
+    assert result["meeting_name"] is None
+    assert result["calendar_status"] == v2.CAL_OCR_FAILED
+
+
 def test_start_recording_v2_returns_none_on_timeout(monkeypatch, tmp_path):
     """stdout never returns STARTED → _readline_timeout returns '' → None"""
     proc = _make_proc(stdout_lines=[])
@@ -347,6 +382,39 @@ def test_stop_recording_v2_sends_stop_and_renames(monkeypatch, tmp_path):
     assert b"stop\n" in write_calls
     # rename_recording must have been called
     assert len(renamed) == 1
+
+
+def test_stop_recording_v2_does_not_retry_ocr_at_stop(monkeypatch, tmp_path):
+    """Screen OCR must NOT be retried at stop — by then the meeting has already
+    ended (STOP_GRACE confirmed it), so the live-call-timer confidence gate can
+    never pass. Retrying here would only block the main loop (and the
+    SIGINT/SIGTERM handler, which calls stop_recording_v2 directly) for no
+    realistic chance of success. Calendar retry is unaffected — it stays,
+    since calendar data can genuinely arrive late."""
+    rec_path = tmp_path / "rec_10-00_01-01-2026.m4a"
+    rec_path.write_bytes(b"fake audio data")
+
+    proc = _make_proc(stdout_lines=["STOPPED_OK"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(v2, "rename_recording", lambda s, d: None)
+    monkeypatch.setattr(v2, "_get_today_meetings_cached", lambda: (v2.CAL_OK_NO_EVENTS, []))
+    monkeypatch.setattr(v2, "find_matching_meeting", lambda *a: None)
+
+    ocr_calls = []
+    monkeypatch.setattr(v2, "get_meeting_title_from_screen",
+                         lambda: ocr_calls.append(1) or "should not be used")
+
+    session = {
+        "start_time":      datetime.now() - timedelta(seconds=300),
+        "recording_path":  str(rec_path),
+        "recording_dir":   str(tmp_path),
+        "meeting_name":    None,
+        "calendar_status": v2.CAL_OK_NO_EVENTS,
+    }
+    v2.stop_recording_v2(proc, session)
+
+    assert ocr_calls == [], "get_meeting_title_from_screen must not be called at stop"
+    assert session["meeting_name"] is None
 
 
 def test_stop_recording_v2_does_not_rename_without_stopped(monkeypatch, tmp_path):
@@ -809,6 +877,64 @@ def test_find_matching_meeting_no_end_time():
     meetings = [{"start": ev_start, "end": None, "name": "Standup"}]
     result = v2.find_matching_meeting(ev_start + timedelta(minutes=30), meetings)
     assert result == "Standup"
+
+
+def test_fallback_reason_for_ocr_failed():
+    assert (v2.fallback_reason_for(v2.CAL_OCR_FAILED)
+            == "no calendar title and no live meeting window detected via screen OCR")
+
+
+# ─── Screen OCR meeting-title fallback ─────────────────────────
+# recorder --meeting-title: OCR the live Teams call window when calendar has
+# no title (v1.2.0 — org policy can block calendar title sharing entirely).
+
+def test_get_meeting_title_from_screen_success(monkeypatch):
+    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
+    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(
+        v2.subprocess, "run",
+        lambda args, **kw: _completed(stdout="DX Lead Discuss & Operations\n", returncode=0))
+    assert v2.get_meeting_title_from_screen() == "DX Lead Discuss & Operations"
+
+
+def test_get_meeting_title_from_screen_binary_missing(monkeypatch):
+    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
+    monkeypatch.setattr(v2.os.path, "exists", lambda p: False)
+    calls = []
+    monkeypatch.setattr(v2.subprocess, "run",
+                         lambda args, **kw: calls.append(args) or _completed())
+    assert v2.get_meeting_title_from_screen() is None
+    assert calls == []  # never shells out if the binary isn't there
+
+
+def test_get_meeting_title_from_screen_no_live_meeting(monkeypatch):
+    """recorder exits non-zero (ERROR: no_live_meeting_detected) → None, not a crash."""
+    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
+    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(
+        v2.subprocess, "run",
+        lambda args, **kw: _completed(stderr="ERROR: no_live_meeting_detected\n", returncode=1))
+    assert v2.get_meeting_title_from_screen() is None
+
+
+def test_get_meeting_title_from_screen_timeout(monkeypatch):
+    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
+    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
+
+    def fake_run(args, **kw):
+        raise v2.subprocess.TimeoutExpired(cmd=args, timeout=25)
+
+    monkeypatch.setattr(v2.subprocess, "run", fake_run)
+    assert v2.get_meeting_title_from_screen() is None
+
+
+def test_get_meeting_title_from_screen_empty_stdout_is_none(monkeypatch):
+    """returncode 0 but blank stdout (shouldn't happen, but don't emit an empty title)."""
+    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
+    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(v2.subprocess, "run",
+                         lambda args, **kw: _completed(stdout="   \n", returncode=0))
+    assert v2.get_meeting_title_from_screen() is None
 
 
 def test_stop_recording_v2_stopped_error_renames_incomplete(monkeypatch, tmp_path):

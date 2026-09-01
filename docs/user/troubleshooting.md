@@ -5,7 +5,7 @@
 | Problem | Fix |
 |---------|-----|
 | Recording doesn't start | Check Screen Recording: System Settings → Privacy & Security → Screen Recording → Team Recorder ✓ → relaunch app |
-| File named "Teams Meeting" (not meeting title) | Calendar permission missing for TeamRecorderBar — re-run Setup Guide… and allow Full Access |
+| File named "Teams Meeting" (not meeting title) | Calendar permission missing for TeamRecorderBar — re-run Setup Guide… and allow Full Access. If your org blocks Calendar entirely, the app tries reading the title off the Teams call window instead — check Screen Recording is granted, and that the Teams call window wasn't minimized during the meeting |
 | No microphone audio | System Settings → Privacy & Security → Microphone → Team Recorder ✓ |
 | Recording continues after meeting ends | Expected — watcher waits 8s before confirming meeting ended (false-stop prevention) |
 | Red recording icon stays after Stop / app feels stuck | Click menu bar icon → Recover Recorder…; current file may be marked incomplete |

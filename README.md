@@ -3,7 +3,7 @@
 บันทึกเสียง Microsoft Teams meeting อัตโนมัติ — ไม่ต้องกด Record เอง
 
 เมื่อเข้า Teams call → เริ่มอัดเอง<br>
-เมื่อออกจาก call → หยุดอัด ตั้งชื่อไฟล์ตาม calendar อัตโนมัติ
+เมื่อออกจาก call → หยุดอัด ตั้งชื่อไฟล์ตามชื่อ meeting อัตโนมัติ (จาก calendar หรืออ่านจากหน้าจอ Teams ถ้า calendar ไม่มีชื่อให้)
 
 ---
 
@@ -113,9 +113,12 @@ Screen Recording ต้อง relaunch แอปหลังเปิดสิ�
 ชื่อไฟล์ตัวอย่าง:
 ```
 Sprint Planning - 10-00_21-05-2026.m4a
-Teams Meeting - 14-30_21-05-2026.m4a        ← ไม่พบ calendar event
+DX Lead Discuss & Operations - 11-00_21-05-2026.m4a  ← ไม่พบ calendar event แต่อ่านชื่อจากหน้าจอ Teams ได้
+Teams Meeting - 14-30_21-05-2026.m4a        ← ไม่พบทั้ง calendar event และชื่อจากหน้าจอ
 Teams Call (Short) - 09-15_21-05-2026.m4a   ← call < 3 นาที
 ```
+
+**ลำดับการหาชื่อ meeting:** Calendar ก่อน → ถ้าไม่มีชื่อ ลองอ่านชื่อจากหน้าต่าง Teams ที่กำลัง call อยู่ (ต้องเห็น toolbar ของ meeting บนหน้าจอ ไม่ minimize) → ถ้ายังไม่มี ใช้ "Teams Meeting"
 
 **Format:** `.m4a` container, AAC 32 kbps / 16 kHz, mono — system audio + microphone รวมกัน (~14 MB/ชั่วโมง, optimised สำหรับ NotebookLM / Whisper)
 
@@ -214,7 +217,7 @@ make uninstall
 |-------|---------|
 | ไม่เริ่มอัด | เปิด Setup Guide… → Step 1 Screen Recording → ให้สิทธิ์แล้ว Relaunch App |
 | Setup Guide ไม่ขึ้น | คลิก menu bar icon → Setup Guide… |
-| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder ยังไม่ได้รับสิทธิ์ Calendar → เปิด Setup Guide… แล้วให้สิทธิ์ Calendar / Full Access |
+| ชื่อไฟล์เป็น "Teams Meeting" | Team Recorder ยังไม่ได้รับสิทธิ์ Calendar → เปิด Setup Guide… แล้วให้สิทธิ์ Calendar / Full Access. ถ้าองค์กรบล็อกการ sync/publish calendar (ไม่มีสิทธิ์ Calendar ให้ตั้งค่า) — เช็คว่า Screen Recording permission เปิดอยู่ และหน้าต่าง Teams meeting ไม่ได้ minimize ตอนอัด (ระบบจะลองอ่านชื่อจากหน้าจอแทน) |
 | icon แดงค้าง / Stop แล้วนิ่ง | คลิก menu bar icon → Recover Recorder… แล้วเริ่ม watcher ใหม่ |
 | macOS แจ้งเตือน "ไม่รู้จักผู้พัฒนา" หรือ "TeamRecorderBar was blocked" | **Sonoma:** คลิกขวา → Open → Open / **Sequoia:** System Settings → Privacy & Security → Open Anyway |
 | Setup แจ้ง "App bundle is corrupted" | ลบแอปแล้ว re-download จาก GitHub Releases อีกครั้ง |
