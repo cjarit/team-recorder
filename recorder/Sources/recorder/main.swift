@@ -919,21 +919,34 @@ func runMeetingTitle() {
         exit(1)
     }
 
+    // Retry: right after joining, Teams often shows a "connecting..." transition
+    // before the call toolbar (and its timer) actually renders — a single
+    // immediate pass can miss it entirely, especially on a call that's left again
+    // within seconds. ยิ่งถ้า join แล้วออกเร็ว toolbar อาจยังไม่ทันขึ้นตอน capture
+    // ครั้งแรก — retry สั้นๆ ไม่กี่ครั้งเพื่อรอ Teams render ให้เสร็จ
+    let kMaxAttempts = 4
+    let kRetryDelay: UInt64 = 1_500_000_000  // 1.5s
+
     let sema = DispatchSemaphore(value: 0)
     var found: String?
     Task {
-        for window in windows {
-            guard let strip = try? await captureTopStrip(of: window) else { continue }
-            guard let lines = try? recognizedLines(in: strip) else { continue }
-            guard meetingTitleHasTimer(lines) else { continue }  // not the live call window
-            if let title = extractMeetingTitle(from: lines) {
-                found = title
-                break
+        for attempt in 1...kMaxAttempts {
+            let attemptWindows = attempt == 1 ? windows : ((try? fetchTeamsWindows()) ?? windows)
+            for window in attemptWindows {
+                guard let strip = try? await captureTopStrip(of: window) else { continue }
+                guard let lines = try? recognizedLines(in: strip) else { continue }
+                guard meetingTitleHasTimer(lines) else { continue }  // not the live call window
+                if let title = extractMeetingTitle(from: lines) {
+                    found = title
+                    break
+                }
             }
+            if found != nil || attempt == kMaxAttempts { break }
+            try? await Task.sleep(nanoseconds: kRetryDelay)
         }
         sema.signal()
     }
-    _ = sema.wait(timeout: .now() + 20)
+    _ = sema.wait(timeout: .now() + 22)
 
     if let title = found {
         emit(title)

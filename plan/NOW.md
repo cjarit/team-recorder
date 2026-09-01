@@ -2,11 +2,14 @@
 
 ## Current focus
 
-**v1.2.0 — Screen OCR meeting-title fallback.** Calendar can no longer supply
-meeting titles for this user's org (Exchange sync blocked; calendar-publish
-locked to free/busy-only by tenant policy — see `plan/DECISIONS.md`,
-2026-09-01). New fallback: OCR the live Teams call toolbar via
-ScreenCaptureKit + Vision when calendar has no match.
+**v1.2.1 — Screen OCR meeting-title fallback, join-transition race fixed.**
+Calendar can no longer supply meeting titles for this user's org (Exchange
+sync blocked; calendar-publish locked to free/busy-only by tenant policy —
+see `plan/DECISIONS.md`, 2026-09-01). Fallback: OCR the live Teams call
+toolbar via ScreenCaptureKit + Vision when calendar has no match. v1.2.0
+shipped with a real-world gap (single-pass OCR missed the toolbar during
+Teams' post-join transition on short calls) — fixed in v1.2.1 with a
+short retry loop. See `plan/DECISIONS.md` for the log evidence and fix.
 
 ## Phase status
 
@@ -22,10 +25,10 @@ ScreenCaptureKit + Vision when calendar has no match.
 
 ## Open items
 
-- [ ] Live-verify OCR correctly returns non-zero/no-title when *not* in a call (couldn't test — was in a live meeting throughout development)
+- [x] Live-verify OCR correctly returns non-zero/no-title when *not* in a call — confirmed after the v1.2.1 fix: `ERROR: no_teams_windows_found`, exit 1, no stdout
 - [ ] Thai-language Teams UI — the position-based extraction (title row above timer row) should be language-independent, but hasn't been observed on an actual Thai-language Teams client; verify when possible
 - [ ] Thai-language meeting *title* OCR accuracy — untested, no Thai-titled meeting was live during development
-- [ ] Ad-hoc (non-calendar) call title OCR — untested
+- [ ] Ad-hoc (non-calendar) call title OCR — real-world test on 2026-09-01 (calendar invite "Test for Team Record ครับ", joined via the Join button) hit the join-transition race (fixed in v1.2.1) before a title could be confirmed — retest with v1.2.1 to close this out
 - [ ] Upgrade test: does replacing the installed v1.1.1 `.app` re-trigger TCC permission prompts? Unknown until tested — document actual result in `docs/user/troubleshooting.md`
 - [ ] Gatekeeper screenshot (carried over from v1.0, still open) — `docs/user/images/gatekeeper-bypass.png`
 
