@@ -309,7 +309,7 @@ def test_start_recording_v2_falls_back_to_screen_ocr(monkeypatch, tmp_path):
     monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
     monkeypatch.setattr(v2, "find_matching_meeting", lambda *a: None)
     monkeypatch.setattr(v2, "get_meeting_title_from_screen",
-                         lambda: "DX Lead Discuss & Operations")
+                         lambda p: "DX Lead Discuss & Operations")
     v2._meetings_cache["date"] = None
 
     result = v2.start_recording_v2(proc, str(tmp_path))
@@ -326,7 +326,7 @@ def test_start_recording_v2_ocr_also_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
     monkeypatch.setattr(v2, "get_today_meetings", lambda: (v2.CAL_OK_NO_EVENTS, []))
     monkeypatch.setattr(v2, "find_matching_meeting", lambda *a: None)
-    monkeypatch.setattr(v2, "get_meeting_title_from_screen", lambda: None)
+    monkeypatch.setattr(v2, "get_meeting_title_from_screen", lambda p: None)
     v2._meetings_cache["date"] = None
 
     result = v2.start_recording_v2(proc, str(tmp_path))
@@ -402,7 +402,7 @@ def test_stop_recording_v2_does_not_retry_ocr_at_stop(monkeypatch, tmp_path):
 
     ocr_calls = []
     monkeypatch.setattr(v2, "get_meeting_title_from_screen",
-                         lambda: ocr_calls.append(1) or "should not be used")
+                         lambda p: ocr_calls.append(1) or "should not be used")
 
     session = {
         "start_time":      datetime.now() - timedelta(seconds=300),
@@ -885,56 +885,46 @@ def test_fallback_reason_for_ocr_failed():
 
 
 # ─── Screen OCR meeting-title fallback ─────────────────────────
-# recorder --meeting-title: OCR the live Teams call window when calendar has
-# no title (v1.2.0 — org policy can block calendar title sharing entirely).
+# recorder's in-process "title" stdin command: OCR the live Teams call
+# window when calendar has no title (v1.2.0 — org policy can block calendar
+# title sharing entirely). MUST go through the stdin of the recorder process
+# that is already recording — spawning a second `recorder --meeting-title`
+# process concurrently is a different ScreenCaptureKit client and interrupts
+# the first one's SCStream (confirmed by live testing; see plan/DECISIONS.md).
 
 def test_get_meeting_title_from_screen_success(monkeypatch):
-    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
-    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
-    monkeypatch.setattr(
-        v2.subprocess, "run",
-        lambda args, **kw: _completed(stdout="DX Lead Discuss & Operations\n", returncode=0))
-    assert v2.get_meeting_title_from_screen() == "DX Lead Discuss & Operations"
-
-
-def test_get_meeting_title_from_screen_binary_missing(monkeypatch):
-    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
-    monkeypatch.setattr(v2.os.path, "exists", lambda p: False)
-    calls = []
-    monkeypatch.setattr(v2.subprocess, "run",
-                         lambda args, **kw: calls.append(args) or _completed())
-    assert v2.get_meeting_title_from_screen() is None
-    assert calls == []  # never shells out if the binary isn't there
+    proc = _make_proc(stdout_lines=["TITLE DX Lead Discuss & Operations"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    assert v2.get_meeting_title_from_screen(proc) == "DX Lead Discuss & Operations"
+    write_calls = [c[0][0] for c in proc.stdin.write.call_args_list]
+    assert b"title\n" in write_calls
 
 
 def test_get_meeting_title_from_screen_no_live_meeting(monkeypatch):
-    """recorder exits non-zero (ERROR: no_live_meeting_detected) → None, not a crash."""
-    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
-    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
-    monkeypatch.setattr(
-        v2.subprocess, "run",
-        lambda args, **kw: _completed(stderr="ERROR: no_live_meeting_detected\n", returncode=1))
-    assert v2.get_meeting_title_from_screen() is None
+    """recorder responds TITLE_NONE → None, not a crash."""
+    proc = _make_proc(stdout_lines=["TITLE_NONE"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    assert v2.get_meeting_title_from_screen(proc) is None
+
+
+def test_get_meeting_title_from_screen_broken_pipe(monkeypatch):
+    proc = _make_proc(stdout_lines=[])
+    proc.stdin.write.side_effect = BrokenPipeError()
+    assert v2.get_meeting_title_from_screen(proc) is None
 
 
 def test_get_meeting_title_from_screen_timeout(monkeypatch):
-    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
-    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
-
-    def fake_run(args, **kw):
-        raise v2.subprocess.TimeoutExpired(cmd=args, timeout=25)
-
-    monkeypatch.setattr(v2.subprocess, "run", fake_run)
-    assert v2.get_meeting_title_from_screen() is None
+    """No response within the timeout → None, not a hang."""
+    proc = _make_proc(stdout_lines=[])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: ([], [], []))
+    assert v2.get_meeting_title_from_screen(proc) is None
 
 
-def test_get_meeting_title_from_screen_empty_stdout_is_none(monkeypatch):
-    """returncode 0 but blank stdout (shouldn't happen, but don't emit an empty title)."""
-    monkeypatch.setattr(v2, "find_recorder_binary", lambda: "/fake/recorder")
-    monkeypatch.setattr(v2.os.path, "exists", lambda p: True)
-    monkeypatch.setattr(v2.subprocess, "run",
-                         lambda args, **kw: _completed(stdout="   \n", returncode=0))
-    assert v2.get_meeting_title_from_screen() is None
+def test_get_meeting_title_from_screen_unexpected_response_is_none(monkeypatch):
+    """Malformed/unexpected response (shouldn't happen) → None, not a crash."""
+    proc = _make_proc(stdout_lines=["garbage"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    assert v2.get_meeting_title_from_screen(proc) is None
 
 
 def test_stop_recording_v2_stopped_error_renames_incomplete(monkeypatch, tmp_path):

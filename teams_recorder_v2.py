@@ -354,35 +354,40 @@ def find_matching_meeting(start_time: datetime, meetings: list) -> "str | None":
     return best_name
 
 
-def get_meeting_title_from_screen() -> "str | None":
-    """OCR ชื่อ meeting จาก Teams call toolbar ผ่าน `recorder --meeting-title`
+def get_meeting_title_from_screen(proc: "subprocess.Popen") -> "str | None":
+    """OCR ชื่อ meeting จาก Teams call toolbar ผ่าน stdin command "title" ที่ส่งไปยัง
+    recorder process ตัวเดียวกับที่กำลังอัดเสียงอยู่ (ไม่ spawn process แยก)
     Fallback เมื่อ calendar ไม่มีชื่อให้ (เช่น org policy บล็อก Exchange sync/publish
-    calendar แบบมี title). Binary เท่านั้นที่ทำ screen capture — เลี่ยงปัญหา TCC
+    calendar แบบมี title)
+
+    ⚠️ ห้าม spawn `recorder --meeting-title` เป็น process แยกขณะกำลังอัดอยู่ — จะกลายเป็น
+    คนละ ScreenCaptureKit client กัน ทำให้ SCStream ของการอัดที่กำลังทำงานหลุด (พิสูจน์
+    แล้วจากการทดสอบจริง เห็น "application connection being interrupted" ใน stderr ของ
+    process ที่กำลังอัดตอนมี process ที่สองมา capture พร้อมกัน). ต้องส่งผ่าน stdin ของ
+    proc ตัวเดียวกันเท่านั้น — ตัว binary ทำ screen capture เอง เลี่ยงปัญหา TCC
     attribution เดียวกับที่ icalBuddy เจอตอนรันผ่าน Python (ดู CLAUDE.md Calendar architecture)
+
     Returns: ชื่อ meeting ที่ OCR ได้ หรือ None ถ้าไม่พบ live meeting window
     """
-    binary = find_recorder_binary()
-    if not os.path.exists(binary):
-        return None
     try:
-        result = subprocess.run(
-            [binary, "--meeting-title"],
-            capture_output=True, text=True, timeout=25,
-        )
-    except subprocess.TimeoutExpired:
-        log("[WARN] recorder --meeting-title timeout")
-        return None
-    except Exception as e:
-        log(f"[WARN] recorder --meeting-title failed: {e}")
+        proc.stdin.write(b"title\n")
+        proc.stdin.flush()
+    except BrokenPipeError:
+        log("[WARN] recorder ไม่ตอบสนอง (broken pipe) ตอนขอ meeting title")
         return None
 
-    if result.returncode != 0:
-        token = result.stderr.strip() or "unknown error"
-        log(f"[INFO] Screen OCR ไม่พบชื่อ meeting: {token}")
+    response = _readline_timeout(proc.stdout, 25.0)
+    if not response:
+        log("[WARN] recorder title timeout")
         return None
+    if response == "TITLE_NONE":
+        log("[INFO] Screen OCR ไม่พบชื่อ meeting (ไม่มี live meeting window)")
+        return None
+    if response.startswith("TITLE "):
+        return response[len("TITLE "):].strip() or None
 
-    title = result.stdout.strip()
-    return title or None
+    log(f"[WARN] recorder title unexpected response: {response!r}")
+    return None
 
 
 def fallback_reason_for(calendar_status: "str | None") -> str:
@@ -941,7 +946,7 @@ def start_recording_v2(proc: "subprocess.Popen",
         log("📅 Meeting: " + meeting_name)
     else:
         # Calendar ไม่มีชื่อ → ลอง OCR จาก Teams call toolbar (screen)
-        ocr_name = get_meeting_title_from_screen()
+        ocr_name = get_meeting_title_from_screen(proc)
         if ocr_name:
             meeting_name = ocr_name
             cal_status = CAL_FROM_OCR

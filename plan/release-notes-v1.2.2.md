@@ -1,9 +1,4 @@
-> **Never published.** This version was superseded by v1.2.2 before being tagged/released —
-> a critical concurrency bug was found in testing right after this fix was written (a second
-> `recorder` process spawned for OCR interrupted the recording's own ScreenCaptureKit stream).
-> See `plan/DECISIONS.md` and `plan/release-notes-v1.2.2.md`. Kept here for historical record only.
-
-# Team Recorder v1.2.1
+# Team Recorder v1.2.2
 
 ## Requirements
 
@@ -12,7 +7,7 @@
 
 ## Install
 
-1. Download **TeamRecorderBar-v1.2.1.zip** and unzip it
+1. Download **TeamRecorderBar-v1.2.2.zip** and unzip it
 2. Drag **TeamRecorderBar.app** to `/Applications/`
 3. **Right-click → Open** (required once — Gatekeeper bypass)
 4. Follow the Setup Guide: Screen Recording → Microphone → Calendar → Finish
@@ -20,6 +15,8 @@
 No Terminal, Homebrew, or Python installation needed.
 
 ## Updating from v1.2.0 or v1.1.x
+
+**If you installed v1.2.0, please update — see "Fixed" below.**
 
 Replace `/Applications/TeamRecorderBar.app` with the new version. Your settings and recording folder are preserved. You may need to re-grant Screen Recording permission once (macOS requires this when the app binary changes), and the first-run Setup Guide may briefly reappear — just click through it, no permissions actually need re-granting if already approved.
 
@@ -34,14 +31,18 @@ On macOS 15 Sequoia: if right-click → Open shows no "Open" button, go to Syste
 ## SHA256
 
 ```
-f23370dd8f9ba478cb8bc54c2abc7588f23106e8b11fc6c4ed88cb3933641f10  TeamRecorderBar-v1.2.1.zip
+e0e342a55f1943d6aef54f7114a088122dab8142d344351e16b1457600a9db06  TeamRecorderBar-v1.2.2.zip
 ```
 
-## What's new in v1.2.1
+## What's new in v1.2.2
+
+### Fixed: the screen-title fallback could interrupt system audio during a recording
+
+**If you use the screen-title fallback (Calendar unavailable), please update from v1.2.0.** In v1.2.0, reading the meeting title off the Teams window spawned a second background process momentarily. That second process briefly interrupted the recording's own audio capture — the app recovered automatically and the recording still completed, but system audio could be silently gapped for a second or two while it did. This is fixed: the title is now read by the same process that's already recording, so there's no interruption at all.
 
 ### Fixed: screen-title fallback missed short calls
 
-v1.2.0 shipped the screen-title fallback (see below) but it could miss the title entirely on calls joined and left again within seconds — Teams shows a brief "connecting..." animation right after joining, before the call toolbar (and its timer) actually renders, and the fallback only looked once. It now retries a few times over a couple of seconds before giving up, so short test calls and quick meetings are covered too.
+Calls joined and left again within seconds could get no title from the screen fallback — Teams shows a brief "connecting..." animation right after joining, before the call toolbar (and its timer) actually renders, and the fallback only looked once. It now retries a few times over a couple of seconds before giving up, so short test calls and quick meetings are covered too.
 
 ## What's new in v1.2.0
 

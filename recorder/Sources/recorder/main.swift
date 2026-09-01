@@ -893,66 +893,104 @@ private func extractMeetingTitle(from lines: [OCRLine]) -> String? {
     return candidates.max(by: { $0.text.count < $1.text.count })?.text
 }
 
-func runMeetingTitle() {
-    guard #available(macOS 14.0, *) else {
-        fputs("ERROR: meeting_title_requires_macos_14\n", stderr)
-        exit(1)
-    }
-    // SCScreenshotManager (single-shot capture) crashes with CGS_REQUIRE_INIT
-    // in a bare CLI process unless something touches NSApplication first —
-    // confirmed via PoC. The persistent SCStream path (recording) doesn't need this.
-    _ = NSApplication.shared
-    NSApplication.shared.setActivationPolicy(.accessory)
+// Shared by the standalone `--meeting-title` CLI mode AND the in-process
+// `title` stdin command (used while a recording is already in progress).
+// MUST run in-process during an active recording — a second `recorder`
+// process running `--meeting-title` concurrently is a DIFFERENT ScreenCaptureKit
+// client and interrupts the first one's SCStream (confirmed by testing:
+// "SCStream stopped: application connection being interrupted" on the
+// already-recording process). The in-process path avoids this entirely —
+// same client, no interruption.
+//
+// Result type distinguishes "not on macOS 14+" / "permission denied" from a
+// plain "nothing found this time" so callers can log accordingly.
+enum MeetingTitleResult {
+    case found(String)
+    case notFound
+    case unsupportedOS
+    case permissionDenied
+    case lookupFailed(String)
+}
 
+@available(macOS 14.0, *)
+private func captureMeetingTitleOnce() -> String? {
     let windows: [SCWindow]
     do {
         windows = try fetchTeamsWindows()
-    } catch RecorderError.screenRecordingPermissionDenied {
-        fputs("ERROR: screen_recording_permission_denied\n", stderr)
-        exit(1)
     } catch {
-        fputs("ERROR: teams_window_lookup_failed — \(error.localizedDescription)\n", stderr)
-        exit(1)
+        return nil
     }
-    guard !windows.isEmpty else {
-        fputs("ERROR: no_teams_windows_found\n", stderr)
-        exit(1)
-    }
-
-    // Retry: right after joining, Teams often shows a "connecting..." transition
-    // before the call toolbar (and its timer) actually renders — a single
-    // immediate pass can miss it entirely, especially on a call that's left again
-    // within seconds. ยิ่งถ้า join แล้วออกเร็ว toolbar อาจยังไม่ทันขึ้นตอน capture
-    // ครั้งแรก — retry สั้นๆ ไม่กี่ครั้งเพื่อรอ Teams render ให้เสร็จ
-    let kMaxAttempts = 4
-    let kRetryDelay: UInt64 = 1_500_000_000  // 1.5s
+    guard !windows.isEmpty else { return nil }
 
     let sema = DispatchSemaphore(value: 0)
     var found: String?
     Task {
-        for attempt in 1...kMaxAttempts {
-            let attemptWindows = attempt == 1 ? windows : ((try? fetchTeamsWindows()) ?? windows)
-            for window in attemptWindows {
-                guard let strip = try? await captureTopStrip(of: window) else { continue }
-                guard let lines = try? recognizedLines(in: strip) else { continue }
-                guard meetingTitleHasTimer(lines) else { continue }  // not the live call window
-                if let title = extractMeetingTitle(from: lines) {
-                    found = title
-                    break
-                }
+        for window in windows {
+            guard let strip = try? await captureTopStrip(of: window) else { continue }
+            guard let lines = try? recognizedLines(in: strip) else { continue }
+            guard meetingTitleHasTimer(lines) else { continue }  // not the live call window
+            if let title = extractMeetingTitle(from: lines) {
+                found = title
+                break
             }
-            if found != nil || attempt == kMaxAttempts { break }
-            try? await Task.sleep(nanoseconds: kRetryDelay)
         }
         sema.signal()
     }
-    _ = sema.wait(timeout: .now() + 22)
+    _ = sema.wait(timeout: .now() + 8)
+    return found
+}
 
-    if let title = found {
+/// Retries a few times, short delay apart — right after joining, Teams often
+/// shows a "connecting..." transition before the call toolbar (and its timer)
+/// actually renders, so a single immediate pass can miss it entirely on a
+/// call joined and left again within seconds (confirmed in production).
+/// ยิ่งถ้า join แล้วออกเร็ว toolbar อาจยังไม่ทันขึ้นตอน capture ครั้งแรก —
+/// retry สั้นๆ ไม่กี่ครั้งเพื่อรอ Teams render ให้เสร็จ
+func captureMeetingTitle() -> MeetingTitleResult {
+    guard #available(macOS 14.0, *) else { return .unsupportedOS }
+    // SCScreenshotManager (single-shot capture) crashes with CGS_REQUIRE_INIT
+    // in a bare process unless something touches NSApplication first — confirmed
+    // via PoC. Idempotent, so safe to call on every invocation.
+    _ = NSApplication.shared
+    NSApplication.shared.setActivationPolicy(.accessory)
+
+    do {
+        _ = try fetchTeamsWindows()
+    } catch RecorderError.screenRecordingPermissionDenied {
+        return .permissionDenied
+    } catch {
+        return .lookupFailed(error.localizedDescription)
+    }
+
+    let kMaxAttempts = 4
+    let kRetryDelay: TimeInterval = 1.5
+    for attempt in 1...kMaxAttempts {
+        if let title = captureMeetingTitleOnce() {
+            return .found(title)
+        }
+        if attempt < kMaxAttempts {
+            Thread.sleep(forTimeInterval: kRetryDelay)
+        }
+    }
+    return .notFound
+}
+
+func runMeetingTitle() {
+    switch captureMeetingTitle() {
+    case .found(let title):
         emit(title)
         exit(0)
-    } else {
+    case .notFound:
         fputs("ERROR: no_live_meeting_detected\n", stderr)
+        exit(1)
+    case .unsupportedOS:
+        fputs("ERROR: meeting_title_requires_macos_14\n", stderr)
+        exit(1)
+    case .permissionDenied:
+        fputs("ERROR: screen_recording_permission_denied\n", stderr)
+        exit(1)
+    case .lookupFailed(let reason):
+        fputs("ERROR: teams_window_lookup_failed — \(reason)\n", stderr)
         exit(1)
     }
 }
@@ -1066,6 +1104,17 @@ private func dispatch(_ line: String) {
     } else if cmd == "stop" {
         engine.stop()
         // STOPPED_OK / STOPPED_ERROR emitted by the per-stop StopContext path
+    } else if cmd == "title" {
+        // ต้องทำใน process นี้เท่านั้นตอนกำลังอัดอยู่ — spawn process แยกไปรัน
+        // --meeting-title จะเป็นคนละ SCK client กัน ทำให้ SCStream ของการอัดที่กำลัง
+        // ทำงานอยู่หลุด (พิสูจน์แล้วจากการทดสอบจริง — เห็น "application connection
+        // being interrupted" ตอนมี process ที่สองมา capture พร้อมกัน)
+        switch captureMeetingTitle() {
+        case .found(let title):
+            emit("TITLE " + title)
+        case .notFound, .unsupportedOS, .permissionDenied, .lookupFailed:
+            emit("TITLE_NONE")
+        }
     } else if !cmd.isEmpty {
         fputs("ERROR: unknown command '\(cmd)'\n", stderr)
     }

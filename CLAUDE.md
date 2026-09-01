@@ -104,12 +104,16 @@ Python renames file: {meeting_name} - {HH-MM_DD-MM-YYYY}.m4a
 stdin  → "start /absolute/path/output.m4a\n"   stdout → "STARTED\n"
 stdin  → "stop\n"                               stdout → "STOPPED_OK\n"
                                                       or "STOPPED_ERROR: <reason>\n"
+stdin  → "title\n"                              stdout → "TITLE <meeting name>\n"
+                                                      or "TITLE_NONE\n"
 errors                                          stderr → "ERROR: <token>\n"
 ```
 
 **STOPPED_OK is the sync point** — Python only renames the file after receiving STOPPED_OK.
 On STOPPED_ERROR, Python marks the file as INCOMPLETE_ instead of renaming it normally.
 Never rename before a stop response is confirmed.
+
+**`title` MUST go through the stdin of the already-recording process, never a second spawned `recorder --meeting-title` process** — a second process is a different ScreenCaptureKit client and interrupts the first one's SCStream. Confirmed by testing (v1.2.2): the already-recording process logged `SCStream stopped: application connection being interrupted` the moment a second process ran `--meeting-title` concurrently, with a clean control run when it didn't. `get_meeting_title_from_screen(proc)` in `teams_recorder_v2.py` sends `"title\n"` to the same `proc` used for `start`/`stop` for exactly this reason. The command is synchronous like `start`/`stop` — Python must read the `TITLE`/`TITLE_NONE` response before sending anything else; the single-threaded stdin read loop enforces this anyway. `title` can block for a few seconds (internal retry, see `captureMeetingTitle()` below) — this delays the next command Python sends (e.g. `stop`), never the actual audio pipeline.
 
 ### recorder binary CLI modes
 
@@ -119,7 +123,10 @@ recorder --check              # prints OK + arch + macOS version, exits 0/1
 recorder --list-devices       # UID<TAB>name [input/output], one per line
 recorder --device <UID>       # override mic input device (system audio unaffected)
 recorder --request-permission # trigger Screen Recording dialog (may open under Terminal)
-recorder --meeting-title       # OCR the live Teams call window; prints title to stdout, exits 0/1
+recorder --meeting-title       # standalone/manual testing ONLY (make doctor, ad-hoc checks) —
+                                # NEVER run this while another recorder process is recording,
+                                # see stdin/stdout protocol section above. Production path is
+                                # the "title" stdin command sent to the recording process itself.
 ```
 
 ### Error tokens (stderr)
@@ -179,7 +186,7 @@ Key files:
 - **Threading note:** the restart path (`handleSCKStreamStop`) keeps all SCK state mutations on main. The normal start/stop path (`startSCK`, `stopSCK`) runs on the stdin protocol queue (background) — pre-existing behaviour, not introduced by Phase 2B.
 - `startCapture` error captured and rethrown after `sema.wait()`
 - `emit(_:)` — uses `Darwin.write()` for unbuffered stdout (not `print()`)
-- `runMeetingTitle()` — `--meeting-title` CLI mode (v1.2.0). Touches `NSApplication.shared` once first — `SCScreenshotManager.captureImage` (single-shot capture) crashes with `CGS_REQUIRE_INIT` in a bare CLI process otherwise; the continuous `SCStream` recording path doesn't need this. Enumerates every Teams window (New Teams can have Chat/Calendar/Meeting open simultaneously), captures each via `SCContentFilter(desktopIndependentWindow:)` — never coordinate-based capture, proven unsafe (captures whatever window is on-screen at that rect, not the intended one) — crops the top 14% (toolbar band), runs Vision OCR (`en-US` + `th-TH`), and only accepts a window whose OCR text includes a live call timer (`HH:MM:SS` pattern) as the real meeting window. `extractMeetingTitle()` picks the longest OCR line positioned strictly above the timer's row (the title row is always above the timer+toolbar-icons row) — position-based, not an English word list, so it works regardless of the Teams UI's display language and doesn't misclassify numeric or short titles as noise. Retries up to 4 times, 1.5s apart, re-fetching the window list each time — right after joining, Teams shows a "connecting..." transition before the toolbar (and its timer) actually renders, and a single immediate pass can miss it entirely on a call left again within seconds (confirmed in production: two real recordings under 30s both got `no_live_meeting_detected` on the first pass). Total retry budget stays under the 25s subprocess timeout `get_meeting_title_from_screen()` sets in Python.
+- `captureMeetingTitle()` — the shared meeting-title capture logic (v1.2.2), used by BOTH the in-process `title` stdin command (production path, while recording) and the standalone `runMeetingTitle()` (`--meeting-title` CLI mode, manual/doctor use only — never concurrently with a recording, see stdin/stdout protocol section). Touches `NSApplication.shared` once first (idempotent) — `SCScreenshotManager.captureImage` (single-shot capture) crashes with `CGS_REQUIRE_INIT` in a bare process otherwise; the continuous `SCStream` recording path doesn't need this. `captureMeetingTitleOnce()` enumerates every Teams window (New Teams can have Chat/Calendar/Meeting open simultaneously), captures each via `SCContentFilter(desktopIndependentWindow:)` — never coordinate-based capture, proven unsafe (captures whatever window is on-screen at that rect, not the intended one) — crops the top 14% (toolbar band), runs Vision OCR (`en-US` + `th-TH`), and only accepts a window whose OCR text includes a live call timer (`HH:MM:SS` pattern) as the real meeting window. `extractMeetingTitle()` picks the longest OCR line positioned strictly above the timer's row (the title row is always above the timer+toolbar-icons row) — position-based, not an English word list, so it works regardless of the Teams UI's display language and doesn't misclassify numeric or short titles as noise. `captureMeetingTitle()` wraps this with up to 4 retries, 1.5s apart — right after joining, Teams shows a "connecting..." transition before the toolbar (and its timer) actually renders, and a single immediate pass can miss it entirely on a call left again within seconds (confirmed in production: two real recordings under 30s both got `no_live_meeting_detected` on the first pass). Total retry budget stays under the 25s stdin-response timeout `get_meeting_title_from_screen()` sets in Python.
 
 ---
 
@@ -223,10 +230,11 @@ If Thai transcription accuracy degrades at 32 kbps: change `kBitrate` to `48_000
 Calendar matching is **not** a tunable constant — `find_matching_meeting()` matches a
 recording to a calendar event by interval containment with a fixed ±5-minute slack.
 
-**Title resolution order (v1.2.0):** Calendar (`find_matching_meeting()`) → Screen OCR
-(`get_meeting_title_from_screen()`, calls `recorder --meeting-title`) → `"Teams Meeting"`
-placeholder. OCR only runs when calendar returns no match, at both recording-start and
-the existing stop-time retry. This exists because calendar titles can be entirely
+**Title resolution order (v1.2.x):** Calendar (`find_matching_meeting()`) → Screen OCR
+(`get_meeting_title_from_screen(proc)`, sends `"title\n"` via stdin to the already-recording
+process — see stdin/stdout protocol above) → `"Teams Meeting"` placeholder. OCR only runs
+when calendar returns no match, at recording-start only (a stop-time retry was tried and
+removed, see `plan/DECISIONS.md`). This exists because calendar titles can be entirely
 unavailable by org policy (Exchange sync blocked, calendar-publish locked to
 free/busy-only) — see `plan/DECISIONS.md`, 2026-09-01.
 
@@ -264,7 +272,7 @@ Get mic UID: `recorder/recorder --list-devices`
 
 **Calendar architecture (TeamRecorderBar):** `Python.framework` has its own bundle ID (`org.python.python`). macOS TCC uses the nearest ancestor with a bundle ID as the responsible app, so Python claims that role — icalBuddy's Calendar request is attributed to Python, which cannot be granted Calendar via System Settings UI. Fix: TeamRecorderBar reads Calendar via its own `EKEventStore` grant, writes `APP_SUPPORT_DIR/events-today.json`, Python reads the file (no TCC needed). icalBuddy remains the fallback for `make run` / Terminal contexts where TCC sees Terminal.
 
-**Calendar can be entirely unavailable by org policy, not just by permission.** Some orgs block Exchange account sync to Apple Calendar *and* lock Outlook's "Publish a calendar" sharing level to free/busy-only (no titles/locations option in the permissions dropdown at all — a tenant-level Exchange sharing policy, confirmed by testing, not a device setting). No client-side workaround exists for this. This is why the Screen OCR fallback (`--meeting-title`, see Tuned Constants above) exists — it's not redundant with Calendar, it's the path for users whose org blocks calendar title sharing entirely.
+**Calendar can be entirely unavailable by org policy, not just by permission.** Some orgs block Exchange account sync to Apple Calendar *and* lock Outlook's "Publish a calendar" sharing level to free/busy-only (no titles/locations option in the permissions dropdown at all — a tenant-level Exchange sharing policy, confirmed by testing, not a device setting). No client-side workaround exists for this. This is why the Screen OCR fallback (the `title` stdin command, see Tuned Constants above) exists — it's not redundant with Calendar, it's the path for users whose org blocks calendar title sharing entirely.
 
 **Calendar allowlist (per-user filter):** Users can limit which calendars are scanned for meeting names via the "Tracked Calendars" submenu in the menu bar. The allowlist is persisted as `trackedCalendarIds` (`[String]`) in `UserDefaults`. `nil` (key absent) = track all calendars. The filter is applied in `CalendarEventBridge.writeEventsIfAuthorized()` before building `events-today.json`. Stale identifiers (from deleted calendars) are silently ignored at query time — **never auto-removed** during timer cycles to avoid falsely wiping the allowlist during transient account sync outages. Each event dict includes `"calendar"` (display name) and `"calendarId"` (stable `EKCalendar.calendarIdentifier`) fields for future use. Python ignores these fields — filtering is fully upstream in Swift.
 
@@ -307,7 +315,8 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | `ModuleNotFoundError: No module named 'dotenv'` via `make run` | python-dotenv not installed in the active Python | `make setup` then retry |
 | Recording named "Teams Meeting" when using TeamRecorderBar | Calendar not granted to TeamRecorderBar, or bridge file stale | System Settings → Privacy & Security → Calendars → enable TeamRecorderBar; then menu bar → Permissions → "Calendar: OK" should appear |
 | Recording still named "Teams Meeting" even with no calendar issue (v1.2.0+) | Screen OCR fallback also found nothing — Teams window was minimized/fully occluded (occlusion is fine, minimized is not — SCK can't capture a minimized window's content), no live call timer visible, or Screen Recording permission not granted to `recorder` | Check `session.log` for `[INFO] Screen OCR ไม่พบชื่อ meeting: <token>`; confirm Screen Recording permission (`make doctor`); ensure the Teams call window isn't minimized during the meeting |
-| Screen OCR returns the wrong window's title (e.g. "Calendar" instead of the meeting name) | New Teams UI update moved/removed the call timer from the toolbar, breaking the confidence gate in `runMeetingTitle()` | Same fix pattern as the 2026-07-03 UDP-port change: check what the toolbar looks like now, adjust the timer regex or window-selection heuristic in `recorder/main.swift`, rebuild |
+| Screen OCR returns the wrong window's title (e.g. "Calendar" instead of the meeting name) | New Teams UI update moved/removed the call timer from the toolbar, breaking the confidence gate in `captureMeetingTitle()` | Same fix pattern as the 2026-07-03 UDP-port change: check what the toolbar looks like now, adjust the timer regex or window-selection heuristic in `recorder/main.swift`, rebuild |
+| System audio silent or briefly gapped, recording still completes | A second `recorder --meeting-title` process ran concurrently with the recording process — different ScreenCaptureKit client, interrupts the first one's SCStream | **Confirmed production bug, fixed in v1.2.2 — do not reintroduce.** Screen-title capture during an active recording MUST go through the `title` stdin command sent to the already-recording process (see stdin/stdout protocol section). Never spawn a second `recorder --meeting-title` process while one is already recording. |
 
 ---
 
