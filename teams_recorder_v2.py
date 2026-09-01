@@ -55,6 +55,9 @@ RECORDING_DIR   = os.path.expanduser(os.getenv("RECORDING_DIR",
 POLL_INTERVAL   = 3    # วินาที (ลดจาก 5 → detect เร็วขึ้น)
 STOP_GRACE      = 8    # วินาทีรอก่อน confirm meeting จบ (ป้องกัน false stop จาก UDP หลุดชั่วคราว)
 MIN_DURATION    = 180  # วินาที — ต่ำกว่านี้ = accidental call
+TITLE_RETRY_EVERY = 5  # poll cycles ระหว่างการขอชื่อ meeting ซ้ำ (~15s ที่ POLL_INTERVAL=3)
+                       # ขอซ้ำเรื่อยๆ ตลอด meeting จนกว่าจะได้ชื่อ — ตอนเริ่มอัดมักยังอยู่
+                       # หน้า pre-join ซึ่งยังไม่มีชื่อให้ (ดู main loop)
 UDP_MEET_THRESH = 4    # established UDP ขั้นต่ำที่ถือว่า in meeting
                        # background Teams = 1-2 เส้น, meeting = 4+ (RTP/STUN/TURN)
                        # นับรวมทั้ง MSTeams + ModuleHost/SlimCore (ดู _resolve_teams_pids)
@@ -1587,6 +1590,8 @@ def main():
     signal.signal(signal.SIGUSR2, _handle_sigusr2)
     # ──────────────────────────────────────────────────────────
 
+    title_retry_tick = 0
+
     try:
         while True:
             # ตรวจ binary ยังอยู่ไหม — ถ้าตายให้ respawn แทนที่จะหยุดทั้งหมด
@@ -1648,6 +1653,29 @@ def main():
                 # UDP กลับมาระหว่าง grace period → ยกเลิก pending stop
                 end_pending_at = 0.0
                 log("✓  Meeting ยังอยู่ (connection กลับมา)")
+
+            # ─── ขอชื่อ meeting ซ้ำระหว่างอัด ──────────────────────
+            # ตอนเริ่มอัดมักยังไม่มีชื่อ เพราะหน้า pre-join ("Meeting join | ...") เปิด UDP
+            # media socket แล้วตั้งแต่ยังไม่กด Join now → watcher เริ่มอัดก่อนเข้า call จริง
+            # (ยืนยันจาก --diagnose-title 2026-09-01) หรือ window ถูก minimize อยู่
+            # พอเข้า call จริง/เปิด window คืนมา รอบถัดไปจะได้ชื่อเอง
+            if (session and in_meeting
+                    and session.get("meeting_name") is None
+                    and proc.poll() is None):
+                title_retry_tick += 1
+                if title_retry_tick >= TITLE_RETRY_EVERY:
+                    title_retry_tick = 0
+                    late_name = get_meeting_title_from_screen(proc)
+                    if late_name:
+                        session["meeting_name"]    = late_name
+                        session["calendar_status"] = CAL_FROM_OCR
+                        log("🖥  Screen title (retry): " + late_name)
+                        write_status(
+                            "recording", meeting_name=late_name,
+                            recording_path=session.get("recording_path"),
+                            started_at=session["start_time"].isoformat(timespec="seconds"))
+            else:
+                title_retry_tick = 0
 
             # ─── Keyboard input ───────────────────────────────────
             # P2-B: ถ้า Teams ไม่ได้เปิด ลด polling 3x → ประหยัด CPU / lsof calls

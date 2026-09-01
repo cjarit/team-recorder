@@ -879,18 +879,37 @@ private func recognizedLines(in image: CGImage) throws -> [OCRLine] {
     }
 }
 
-/// Meeting title = longest OCR line strictly above the timer's row.
-/// ใช้ตำแหน่งแทน word-list ภาษาอังกฤษ — title อยู่แถวบนสุดเสมอ ส่วน timer + toolbar
-/// icons (Chat/People/Camera/...) อยู่แถวเดียวกันด้านล่าง ไม่ว่า Teams UI จะตั้งภาษาอะไร
-/// (word-list เดิมพังถ้า Teams UI เป็นภาษาไทย — ทีมนี้เป็นทีมไทย จึงเป็นไปได้จริง)
-private func extractMeetingTitle(from lines: [OCRLine]) -> String? {
-    guard let timerLine = lines.first(where: { isTimerLine($0.text) }) else { return nil }
-    let candidates = lines.filter { line in
-        guard line.midY > timerLine.midY + 0.02 else { return false }  // strictly above the timer's row
-        let trimmed = line.text.trimmingCharacters(in: .whitespaces)
-        return trimmed.count > 1  // strips lone decorative glyphs (•) picked up above the title
-    }
-    return candidates.max(by: { $0.text.count < $1.text.count })?.text
+// Meeting name comes from SCWindow.title, NOT from OCR.
+//
+// OCR ใช้แค่ "หา timer" (ตัวเลข อ่านแม่นทุกภาษา) เพื่อบอกว่า window ไหนคือ call จริง
+// ส่วน "ชื่อ meeting" อ่านจาก window title ตรงๆ — แม่นยำ ไม่เพี้ยน และรองรับภาษาไทย
+//
+// พิสูจน์จากการทดสอบจริง (2026-09-01): meeting ชื่อ 'Test for Team Record ครับ'
+//   window title → 'Test for Team Record ครับ | Microsoft Teams'   (ถูกต้อง 100%)
+//   OCR อ่านได้  → 'Test for Team Record Ašu' / 'Test for Team Record nu'
+//                  (ภาษาไทยเพี้ยน และเพี้ยนคนละแบบในแต่ละครั้ง)
+// ทีมนี้ตั้งชื่อ meeting เป็นไทยเป็นปกติ → OCR ใช้อ่านชื่อไม่ได้เลย
+private let kTeamsWindowSuffix = " | Microsoft Teams"
+private let kTeamsPreJoinPrefix = "Meeting join | "
+
+/// Strips Teams' window-title decoration to leave just the meeting name.
+///   'Test for Team Record ครับ | Microsoft Teams'                → 'Test for Team Record ครับ'
+///   'Meeting join | Test for Team Record ครับ | Microsoft Teams' → 'Test for Team Record ครับ'
+func meetingNameFromWindowTitle(_ rawTitle: String?) -> String? {
+    guard var t = rawTitle?.trimmingCharacters(in: .whitespaces), !t.isEmpty else { return nil }
+    if t.hasSuffix(kTeamsWindowSuffix) { t = String(t.dropLast(kTeamsWindowSuffix.count)) }
+    if t.hasPrefix(kTeamsPreJoinPrefix) { t = String(t.dropFirst(kTeamsPreJoinPrefix.count)) }
+    t = t.trimmingCharacters(in: .whitespaces)
+    // 'Microsoft Teams' alone, or an empty remainder, is not a meeting name
+    guard !t.isEmpty, t != "Microsoft Teams" else { return nil }
+    return t
+}
+
+/// True when the window is Teams' pre-join / green-room screen for a meeting.
+/// หน้า pre-join เปิด UDP media socket แล้ว → watcher เริ่มอัดตั้งแต่ตอนนี้ ทั้งที่ยังไม่เข้า
+/// call จริง จึงยังไม่มี toolbar/timer ให้จับ — แต่ชื่อ meeting อยู่ใน window title แล้ว
+func isPreJoinWindow(_ rawTitle: String?) -> Bool {
+    (rawTitle ?? "").hasPrefix(kTeamsPreJoinPrefix)
 }
 
 // Shared by the standalone `--meeting-title` CLI mode AND the in-process
@@ -912,6 +931,10 @@ enum MeetingTitleResult {
     case lookupFailed(String)
 }
 
+/// One pass. Ranked, most-certain first:
+///   1. a window whose toolbar shows a live call timer  → definitely the active call
+///   2. a "Meeting join | …" pre-join window            → meeting is starting, name is known
+/// ชื่อมาจาก window title เสมอ — OCR ใช้แค่ยืนยันว่า window ไหนคือ call ที่ live อยู่
 @available(macOS 14.0, *)
 private func captureMeetingTitleOnce() -> String? {
     let windows: [SCWindow]
@@ -922,31 +945,39 @@ private func captureMeetingTitleOnce() -> String? {
     }
     guard !windows.isEmpty else { return nil }
 
+    // ── 1. In-call window: confirmed by the timer in its toolbar ──
     let sema = DispatchSemaphore(value: 0)
     var found: String?
     Task {
         for window in windows {
+            // ข้าม pre-join ในรอบนี้ — ยังไม่มี timer อยู่แล้ว ไม่ต้องเสียเวลา capture
+            if isPreJoinWindow(window.title) { continue }
             guard let strip = try? await captureTopStrip(of: window) else { continue }
             guard let lines = try? recognizedLines(in: strip) else { continue }
             guard meetingTitleHasTimer(lines) else { continue }  // not the live call window
-            if let title = extractMeetingTitle(from: lines) {
-                found = title
+            if let name = meetingNameFromWindowTitle(window.title) {
+                found = name
                 break
             }
         }
         sema.signal()
     }
     _ = sema.wait(timeout: .now() + 8)
-    return found
+    if let found { return found }
+
+    // ── 2. Pre-join window: no timer yet, but the name is already in the title ──
+    for window in windows where isPreJoinWindow(window.title) {
+        if let name = meetingNameFromWindowTitle(window.title) { return name }
+    }
+    return nil
 }
 
-/// Retries a few times, short delay apart — right after joining, Teams often
-/// shows a "connecting..." transition before the call toolbar (and its timer)
-/// actually renders, so a single immediate pass can miss it entirely on a
-/// call joined and left again within seconds (confirmed in production).
-/// ยิ่งถ้า join แล้วออกเร็ว toolbar อาจยังไม่ทันขึ้นตอน capture ครั้งแรก —
-/// retry สั้นๆ ไม่กี่ครั้งเพื่อรอ Teams render ให้เสร็จ
-func captureMeetingTitle() -> MeetingTitleResult {
+/// `attempts` = 1 for the in-process `title` stdin command: Python re-asks
+/// across poll cycles for the whole meeting, so a long blocking retry here would
+/// just stall the stdin queue for no gain. The standalone `--meeting-title` CLI
+/// has no such driver, so it retries a few times itself.
+/// Python เป็นคน retry ให้ตลอด meeting (ดู CLAUDE.md) — ฝั่ง Swift จึงยิงรอบเดียวพอ
+func captureMeetingTitle(attempts: Int = 4) -> MeetingTitleResult {
     guard #available(macOS 14.0, *) else { return .unsupportedOS }
     // SCScreenshotManager (single-shot capture) crashes with CGS_REQUIRE_INIT
     // in a bare process unless something touches NSApplication first — confirmed
@@ -962,17 +993,93 @@ func captureMeetingTitle() -> MeetingTitleResult {
         return .lookupFailed(error.localizedDescription)
     }
 
-    let kMaxAttempts = 4
     let kRetryDelay: TimeInterval = 1.5
-    for attempt in 1...kMaxAttempts {
+    let total = max(1, attempts)
+    for attempt in 1...total {
         if let title = captureMeetingTitleOnce() {
             return .found(title)
         }
-        if attempt < kMaxAttempts {
+        if attempt < total {
             Thread.sleep(forTimeInterval: kRetryDelay)
         }
     }
     return .notFound
+}
+
+// ─── CLI: --diagnose-title ────────────────────────────────────
+// Diagnostic only — samples the Teams windows repeatedly and dumps exactly what
+// OCR sees (window list, every OCR line, midY, timer match). ใช้ตอนหาสาเหตุว่า
+// ทำไม OCR ไม่เจอชื่อ meeting — ดูได้ว่า toolbar ขึ้นตอนไหน / window ไหนถูกกรองออก
+//
+// ⚠️ ห้ามรันตอนกำลังอัดอยู่ — process แยกจะเป็นคนละ SCK client (ดู protocol section)
+func runDiagnoseTitle() {
+    guard #available(macOS 14.0, *) else {
+        fputs("ERROR: meeting_title_requires_macos_14\n", stderr)
+        exit(1)
+    }
+    _ = NSApplication.shared
+    NSApplication.shared.setActivationPolicy(.accessory)
+
+    let kSamples = 15
+    let kInterval: TimeInterval = 2.0
+    print("=== diagnose-title: \(kSamples) samples, \(kInterval)s apart ===")
+
+    for sample in 1...kSamples {
+        let stamp = String(format: "%5.1fs", Double(sample - 1) * kInterval)
+        var allTeamsWindows: [SCWindow] = []
+        let sema = DispatchSemaphore(value: 0)
+        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, _ in
+            if let content {
+                allTeamsWindows = content.windows.filter {
+                    let n = $0.owningApplication?.applicationName ?? ""
+                    let b = $0.owningApplication?.bundleIdentifier ?? ""
+                    return b.lowercased().contains("teams") || n.lowercased().contains("teams")
+                }
+            }
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 10)
+
+        print("[\(stamp)] \(allTeamsWindows.count) Teams window(s):")
+        for w in allTeamsWindows {
+            let f = w.frame
+            let passesSizeFilter = f.width > 400 && f.height > 400
+            print("   • '\(w.title ?? "nil")' \(Int(f.width))x\(Int(f.height))"
+                  + (passesSizeFilter ? "" : "  [FILTERED OUT: smaller than 400x400]"))
+            print("       parsed name: '\(meetingNameFromWindowTitle(w.title) ?? "nil")'"
+                  + (isPreJoinWindow(w.title) ? "  [pre-join screen]" : ""))
+            guard passesSizeFilter else { continue }
+
+            let capSema = DispatchSemaphore(value: 0)
+            var lines: [OCRLine] = []
+            Task {
+                if let strip = try? await captureTopStrip(of: w),
+                   let l = try? recognizedLines(in: strip) {
+                    lines = l
+                }
+                capSema.signal()
+            }
+            _ = capSema.wait(timeout: .now() + 10)
+
+            if lines.isEmpty {
+                print("       (no OCR text)")
+            } else {
+                let timerFound = lines.contains { isTimerLine($0.text) }
+                print("       timer present: \(timerFound ? "YES" : "NO")")
+                for l in lines {
+                    let mark = isTimerLine(l.text) ? " <-- TIMER" : ""
+                    print(String(format: "       midY=%.3f  '%@'%@", l.midY, l.text, mark))
+                }
+                if timerFound {
+                    print("       => IN-CALL window; name from title: "
+                          + "'\(meetingNameFromWindowTitle(w.title) ?? "nil")'")
+                }
+            }
+        }
+        if sample < kSamples { Thread.sleep(forTimeInterval: kInterval) }
+    }
+    print("=== done ===")
+    exit(0)
 }
 
 func runMeetingTitle() {
@@ -1109,7 +1216,7 @@ private func dispatch(_ line: String) {
         // --meeting-title จะเป็นคนละ SCK client กัน ทำให้ SCStream ของการอัดที่กำลัง
         // ทำงานอยู่หลุด (พิสูจน์แล้วจากการทดสอบจริง — เห็น "application connection
         // being interrupted" ตอนมี process ที่สองมา capture พร้อมกัน)
-        switch captureMeetingTitle() {
+        switch captureMeetingTitle(attempts: 1) {
         case .found(let title):
             emit("TITLE " + title)
         case .notFound, .unsupportedOS, .permissionDenied, .lookupFailed:
@@ -1159,6 +1266,9 @@ case argv.contains("--request-permission"):
     exit(1)                     // unreachable; satisfies compiler
 case argv.contains("--meeting-title"):
     runMeetingTitle()           // calls exit() internally
+    exit(1)                     // unreachable; satisfies compiler
+case argv.contains("--diagnose-title"):
+    runDiagnoseTitle()          // calls exit() internally
     exit(1)                     // unreachable; satisfies compiler
 default:
     runStdinProtocol()

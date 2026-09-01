@@ -9,7 +9,7 @@
 
 ## Build & test
 
-- [ ] `make test` — 116 passed, 3 skipped (baseline as of v1.2.0; reconcile this number each release rather than letting it drift)
+- [ ] `make test` — 118 passed, 3 skipped (baseline as of v1.2.3; reconcile this number each release rather than letting it drift)
 - [ ] `make menu-bar` — clean build, zero warnings
 - [ ] `make doctor` — no errors on a clean machine
 - [ ] `make release` — `dist/TeamRecorderBar-v*.zip` created; SHA256 emitted

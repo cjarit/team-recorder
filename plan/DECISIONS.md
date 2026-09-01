@@ -85,3 +85,34 @@ A control run (same flow, no concurrent second process) produced clean stderr. T
 **Root cause of the miss:** validating a new capability standalone and never testing it in the one condition it actually runs under (concurrent with the thing it's meant to enrich). Recorded here as the general lesson: for any feature that runs *alongside* an existing long-lived process, the concurrent case is the test that matters, not the isolated one.
 
 **v1.2.1 was never published** — this fix landed before that tag was pushed, so the affected patch never reached a public release beyond v1.2.0 itself.
+
+### Root cause finally found by measurement, not theory: the pre-join screen (v1.2.3)
+
+v1.2.0, v1.2.1 and v1.2.2 all shipped fixes for "recordings still named Teams Meeting" that were reasoned from *plausibility* rather than evidence. All of them were wrong about the cause. A `--diagnose-title` mode was added and run against a real join; it settled the question in one 30-second capture.
+
+**What the measurement showed.** On a fresh join, the only Teams window present was:
+```
+'Meeting join | Test for Team Record ครับ | Microsoft Teams'   timer present: NO
+```
+That is Teams' **pre-join / green-room screen** (camera-mic setup, before pressing "Join now"). It already opens call-media UDP sockets, so `UDP_MEET_THRESH` fires and the watcher starts recording *while the user is still on that screen* — no call toolbar, no timer, so the confidence gate correctly refused. After pressing "Join now" the same window became:
+```
+'Test for Team Record ครับ | Microsoft Teams'                  timer present: YES (00:57)
+```
+
+**Why the earlier fixes could never have worked.** v1.2.1's retry burst (4 × 1.5s) assumed a brief "connecting…" transition. The real gap is however long the user sits on the pre-join screen — unbounded, and often longer than 6s. Worse, OCR only ran *once, at recording start*, so a meeting that later entered the call properly (e.g. the 29-minute recording at 13:30) never looked again.
+
+**Second finding, equally important: OCR cannot read Thai reliably.** Same meeting, same toolbar, consecutive samples:
+```
+window title : 'Test for Team Record ครับ'          (exact, every time)
+OCR sample 1 : 'Test for Team Record Ašu'
+OCR sample 2 : 'Test for Team Record nu'
+```
+Thai is mangled, and mangled *differently* each sample. "Thai OCR accuracy — untested" had been carried as an open risk since v1.2.0; it is now tested and it fails. This team names meetings in Thai routinely, so OCR was never going to supply the name for them.
+
+**Redesign.**
+- **Name comes from `SCWindow.title`**, not OCR — exact, Thai-safe, and available with no capture at all. `meetingNameFromWindowTitle()` strips the `" | Microsoft Teams"` suffix and the `"Meeting join | "` prefix.
+- **OCR's job shrinks to reading the call timer** (digits — language-independent, and read perfectly in every sample). It answers only "is this window the live call", never "what is it called".
+- **Ranked selection:** a non-pre-join window with a timer wins; otherwise a `"Meeting join | …"` window supplies the name, so recordings that start on the pre-join screen get named immediately instead of never.
+- **Python drives retries across the whole meeting** (`TITLE_RETRY_EVERY`, ~15s), replacing the Swift-side retry burst. The `title` stdin command is now a single fast pass (`attempts: 1`). This is the correct altitude: the name is available for the entire meeting, so the loop should keep asking until it gets one — self-healing for pre-join → in-call, for a window minimized at start and restored later, and for any transient cause we have not identified. The user reported some failures where they *were* already in the call; that specific case was never reproduced, and rather than guess at it again, the retry design covers it regardless of cause.
+
+**Process lesson (the real one).** Three releases were spent fixing a symptom against invented causes. The diagnostic that settled it took ~20 minutes to write. Build the instrument before shipping the fix — when a hypothesis cannot be checked against observed data, it is a guess, and shipping guesses to users burned more time than measuring would have.

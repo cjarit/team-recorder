@@ -22,7 +22,7 @@ macOS-only tool that watches for Microsoft Teams meetings and automatically reco
 ```
 Team Recorder/
 ├── teams_recorder_v2.py     Main runtime — do not refactor
-├── test_recorder_v2.py      Unit tests (99 pass, 3 skipped)
+├── test_recorder_v2.py      Unit tests (118 pass, 3 skipped)
 ├── recorder/
 │   ├── recorder             Compiled Swift binary — committed to repo
 │   ├── main.swift           Swift source (Sources/recorder/main.swift)
@@ -123,6 +123,7 @@ recorder --check              # prints OK + arch + macOS version, exits 0/1
 recorder --list-devices       # UID<TAB>name [input/output], one per line
 recorder --device <UID>       # override mic input device (system audio unaffected)
 recorder --request-permission # trigger Screen Recording dialog (may open under Terminal)
+recorder --diagnose-title      # DIAGNOSTICS: dump every Teams window + OCR line for 30s
 recorder --meeting-title       # standalone/manual testing ONLY (make doctor, ad-hoc checks) —
                                 # NEVER run this while another recorder process is recording,
                                 # see stdin/stdout protocol section above. Production path is
@@ -137,7 +138,7 @@ recorder --meeting-title       # standalone/manual testing ONLY (make doctor, ad
 | `ERROR: disk_space_low` | < 200 MB free on output drive |
 | `ERROR: screen_recording_permission_denied` | SCK permission not granted |
 | `ERROR: no_teams_windows_found` | `--meeting-title`: Teams isn't running / no window ≥400×400 |
-| `ERROR: no_live_meeting_detected` | `--meeting-title`: Teams windows found, none show a live call timer |
+| `ERROR: no_live_meeting_detected` | `--meeting-title`: no window showed a live call timer, and no pre-join window either |
 | `ERROR: teams_window_lookup_failed` | `--meeting-title`: `SCShareableContent` fetch failed for a reason other than permission |
 | `ERROR: meeting_title_requires_macos_14` | `--meeting-title` called on macOS < 14 (ScreenCaptureKit single-shot API unavailable) |
 
@@ -186,7 +187,12 @@ Key files:
 - **Threading note:** the restart path (`handleSCKStreamStop`) keeps all SCK state mutations on main. The normal start/stop path (`startSCK`, `stopSCK`) runs on the stdin protocol queue (background) — pre-existing behaviour, not introduced by Phase 2B.
 - `startCapture` error captured and rethrown after `sema.wait()`
 - `emit(_:)` — uses `Darwin.write()` for unbuffered stdout (not `print()`)
-- `captureMeetingTitle()` — the shared meeting-title capture logic (v1.2.2), used by BOTH the in-process `title` stdin command (production path, while recording) and the standalone `runMeetingTitle()` (`--meeting-title` CLI mode, manual/doctor use only — never concurrently with a recording, see stdin/stdout protocol section). Touches `NSApplication.shared` once first (idempotent) — `SCScreenshotManager.captureImage` (single-shot capture) crashes with `CGS_REQUIRE_INIT` in a bare process otherwise; the continuous `SCStream` recording path doesn't need this. `captureMeetingTitleOnce()` enumerates every Teams window (New Teams can have Chat/Calendar/Meeting open simultaneously), captures each via `SCContentFilter(desktopIndependentWindow:)` — never coordinate-based capture, proven unsafe (captures whatever window is on-screen at that rect, not the intended one) — crops the top 14% (toolbar band), runs Vision OCR (`en-US` + `th-TH`), and only accepts a window whose OCR text includes a live call timer (`HH:MM:SS` pattern) as the real meeting window. `extractMeetingTitle()` picks the longest OCR line positioned strictly above the timer's row (the title row is always above the timer+toolbar-icons row) — position-based, not an English word list, so it works regardless of the Teams UI's display language and doesn't misclassify numeric or short titles as noise. `captureMeetingTitle()` wraps this with up to 4 retries, 1.5s apart — right after joining, Teams shows a "connecting..." transition before the toolbar (and its timer) actually renders, and a single immediate pass can miss it entirely on a call left again within seconds (confirmed in production: two real recordings under 30s both got `no_live_meeting_detected` on the first pass). Total retry budget stays under the 25s stdin-response timeout `get_meeting_title_from_screen()` sets in Python.
+- **The meeting NAME comes from `SCWindow.title`, never from OCR.** OCR is used only to read the call **timer** (digits — language-independent, reads reliably). Proven on real meetings 2026-09-01: for a meeting named `Test for Team Record ครับ`, the window title was exactly `'Test for Team Record ครับ | Microsoft Teams'`, while OCR of the same toolbar returned `'Test for Team Record Ašu'` and then `'Test for Team Record nu'` — Thai mangled, and mangled *differently* on consecutive samples. This team names meetings in Thai as a matter of course, so OCR could never have supplied the name. Do not "simplify" this back to reading the title out of the OCR text.
+- `meetingNameFromWindowTitle(_:)` — strips Teams' window-title decoration: trailing `" | Microsoft Teams"`, leading `"Meeting join | "`. Returns nil for an empty remainder or a bare `"Microsoft Teams"`.
+- `isPreJoinWindow(_:)` — true when the title starts with `"Meeting join | "`. **Teams' pre-join / green-room screen opens call-media UDP sockets before you press "Join now"**, so `UDP_MEET_THRESH` fires and recording starts while the user is still on that screen — no call toolbar, no timer, but the meeting name IS already in the window title. Confirmed via `--diagnose-title` on 2026-09-01; this was the actual cause of the v1.2.0–v1.2.2 "recordings still named Teams Meeting" reports, not the transition-timing theory those releases were built on.
+- `captureMeetingTitleOnce()` — one ranked pass: (1) a non-pre-join Teams window whose toolbar OCR shows a live call timer → definitely the active call, take its window title; (2) otherwise a `"Meeting join | …"` window → take its window title. Windows are enumerated fresh each pass (New Teams can have Chat/Calendar/Meeting open at once) and captured via `SCContentFilter(desktopIndependentWindow:)` — never coordinate-based capture, proven unsafe (captures whatever window is on-screen at that rect, not the intended one). Only the top 14% (toolbar band) is captured, and only to find the timer.
+- `captureMeetingTitle(attempts:)` — shared by the in-process `title` stdin command (`attempts: 1`) and the standalone `runMeetingTitle()` / `--meeting-title` CLI (`attempts: 4`, since nothing else is driving retries there). Touches `NSApplication.shared` once first (idempotent) — `SCScreenshotManager.captureImage` crashes with `CGS_REQUIRE_INIT` in a bare process otherwise; the continuous `SCStream` recording path doesn't need this. **Python drives the real retry loop** — see `TITLE_RETRY_EVERY` in `teams_recorder_v2.py`: while recording with no name yet, it re-sends `title` every ~15s for the whole meeting, so pre-join → in-call (and a minimized window later restored) resolves on its own. A long blocking retry inside Swift would only stall the stdin queue.
+- `runDiagnoseTitle()` — `--diagnose-title`, diagnostics only. Samples every 2s for 30s and dumps each Teams window's title, size, size-filter verdict, parsed name, pre-join flag, and every OCR line with its `midY` and timer match. Use this before theorising about why a title wasn't found — it is what turned the pre-join discovery from guesswork into fact. Same rule as `--meeting-title`: never run it while a recording is in progress.
 
 ---
 
@@ -287,7 +293,7 @@ Inline Thai comments are team knowledge from real testing sessions. They explain
 ## Test Coverage
 
 ```
-test_recorder_v2.py — 116 passed, 3 skipped
+test_recorder_v2.py — 118 passed, 3 skipped
 ```
 
 The 3 skipped tests are `@LIVE_SMOKE` — require a real binary and Screen Recording permission. Run with `RUN_LIVE_SMOKE=1 make test`.
@@ -314,7 +320,7 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 | `watcher.pyz not found` at launch | App bundle missing `watcher.pyz` — build artifact not embedded | `make menu-bar` to rebuild the bundle |
 | `ModuleNotFoundError: No module named 'dotenv'` via `make run` | python-dotenv not installed in the active Python | `make setup` then retry |
 | Recording named "Teams Meeting" when using TeamRecorderBar | Calendar not granted to TeamRecorderBar, or bridge file stale | System Settings → Privacy & Security → Calendars → enable TeamRecorderBar; then menu bar → Permissions → "Calendar: OK" should appear |
-| Recording still named "Teams Meeting" even with no calendar issue (v1.2.0+) | Screen OCR fallback also found nothing — Teams window was minimized/fully occluded (occlusion is fine, minimized is not — SCK can't capture a minimized window's content), no live call timer visible, or Screen Recording permission not granted to `recorder` | Check `session.log` for `[INFO] Screen OCR ไม่พบชื่อ meeting: <token>`; confirm Screen Recording permission (`make doctor`); ensure the Teams call window isn't minimized during the meeting |
+| Recording still named "Teams Meeting" even with no calendar issue (v1.2.0+) | No Teams window showed a live call timer AND no pre-join window was found — Teams not running, the meeting window minimized (`onScreenWindowsOnly: true` excludes minimized windows), or Screen Recording not granted to `recorder` | Run `recorder/recorder --diagnose-title` while in the meeting (watcher stopped) — it prints every Teams window, its size, the parsed name, and every OCR line, which tells you immediately which stage failed. Check `session.log` for `Screen OCR ไม่พบชื่อ meeting`; confirm Screen Recording via `make doctor` |
 | Screen OCR returns the wrong window's title (e.g. "Calendar" instead of the meeting name) | New Teams UI update moved/removed the call timer from the toolbar, breaking the confidence gate in `captureMeetingTitle()` | Same fix pattern as the 2026-07-03 UDP-port change: check what the toolbar looks like now, adjust the timer regex or window-selection heuristic in `recorder/main.swift`, rebuild |
 | System audio silent or briefly gapped, recording still completes | A second `recorder --meeting-title` process ran concurrently with the recording process — different ScreenCaptureKit client, interrupts the first one's SCStream | **Confirmed production bug, fixed in v1.2.2 — do not reintroduce.** Screen-title capture during an active recording MUST go through the `title` stdin command sent to the already-recording process (see stdin/stdout protocol section). Never spawn a second `recorder --meeting-title` process while one is already recording. |
 

@@ -2,52 +2,55 @@
 
 ## Current focus
 
-**v1.2.2 — Screen OCR meeting-title fallback, in-process capture (critical fix).**
+**v1.2.3 — Meeting name from window title; pre-join root cause fixed.**
 Calendar can no longer supply meeting titles for this user's org (Exchange
 sync blocked; calendar-publish locked to free/busy-only by tenant policy —
-see `plan/DECISIONS.md`, 2026-09-01). Fallback: OCR the live Teams call
-toolbar via ScreenCaptureKit + Vision when calendar has no match.
+see `plan/DECISIONS.md`, 2026-09-01). Fallback: read the meeting name off
+the Teams window when calendar has no match.
 
-v1.2.0 shipped with two real-world gaps found in immediate post-release
-testing: (1) a join-transition race (single-pass OCR missed the toolbar
-during Teams' post-join transition on short calls), and (2) a **critical**
-concurrency bug — OCR spawned a *second* `recorder` process while the first
-was actively recording, and two `recorder` processes are two different
-ScreenCaptureKit clients, so the second interrupted the first's SCStream on
-every recording (since OCR runs on every recording for this user). Both are
-fixed in v1.2.2: OCR now runs via a `title` stdin command sent to the
-*already-recording* process (no second process, no interruption — verified
-by a direct concurrency test), with the join-transition retry logic moved
-into the same in-process path. v1.2.1 was never published. See
-`plan/DECISIONS.md` for full evidence and reasoning on both fixes.
+Three releases (v1.2.0–v1.2.2) shipped fixes reasoned from plausibility
+rather than evidence, and all were wrong about the cause. A
+`--diagnose-title` mode was added and settled it in one 30-second capture:
+**recording starts while the user is still on Teams' pre-join / green-room
+screen**, which already opens call-media UDP sockets. No call, no toolbar,
+no timer — but the meeting name is right there in the window title.
+
+The same capture proved **OCR cannot read Thai reliably** (`ครับ` → `Ašu`,
+then `nu` on the next sample), while `SCWindow.title` carried it exactly.
+So the name now comes from the window title and OCR only reads the call
+timer (digits — language-independent). Python re-asks every ~15s for the
+whole meeting, so pre-join → in-call resolves on its own.
+
+Full evidence and reasoning in `plan/DECISIONS.md`.
 
 ## Phase status
 
 | Phase | Status | Description |
 |---|---|---|
-| 0 — PoC | ✅ Done | Standalone Swift scratch tool validated SCK window capture + Vision OCR on a real meeting; confirmed occlusion-safe, correct title + confidence-gate window selection |
-| 1 — Swift title capture | ✅ Done | `recorder/main.swift`: shared `captureMeetingTitle()` used by the in-process `title` stdin command (production) and standalone `--meeting-title` CLI mode (manual/doctor testing only); rebuilt + re-signed; tested live |
-| 2 — Python wiring | ✅ Done | `get_meeting_title_from_screen(proc)` sends `"title\n"` to the already-recording process via stdin, wired at recording-start only; new `CAL_FROM_OCR`/`CAL_OCR_FAILED` constants; `make doctor` skip-check added |
-| 3 — Manual rename UI (menu bar) | ⏸ Deferred to v1.3.0 | Decision: ship OCR fallback alone first; see `plan/DECISIONS.md` |
-| 4 — Docs revision | ✅ Done | CLAUDE.md / README / docs/user/ / project-context/ / plan/ all updated for the in-process architecture |
-| 5 — QA | 🔄 In progress | Unit tests done (116 passed, 3 skipped); `/code-review` run, findings fixed; direct concurrency test confirms no SCStream interruption via the `title` stdin command (was reproducibly broken via the old subprocess-spawn approach). Remaining: live smoke gaps below, upgrade test, clean-install test |
-| 6 — Release | 🔄 In progress | v1.2.0 published, has the concurrency bug (undetected in normal use — recovery masks it). v1.2.1 built but never published (superseded before tagging). v1.2.2 pending: version bump, `make release`, SHA256, tag, GitHub Release explaining the fix |
+| 0 — PoC | ✅ Done | Validated SCK window capture + Vision OCR; confirmed occlusion-safe window-targeted capture |
+| 1 — Swift title capture | ✅ Done | `meetingNameFromWindowTitle()` / `isPreJoinWindow()` / `captureMeetingTitleOnce()` ranked selection; `captureMeetingTitle(attempts:)` shared by the `title` stdin command and the `--meeting-title` CLI; `--diagnose-title` added |
+| 2 — Python wiring | ✅ Done | `get_meeting_title_from_screen(proc)` over stdin; retry every `TITLE_RETRY_EVERY` (~15s) across the whole meeting; `CAL_FROM_OCR`/`CAL_OCR_FAILED`; `make doctor` skip-check |
+| 3 — Manual rename UI (menu bar) | ⏸ Deferred to v1.3.0 | Ship the naming fix alone first; see `plan/DECISIONS.md` |
+| 4 — Docs revision | ✅ Done | CLAUDE.md / README / docs/user/ / project-context/ / plan/ updated for the window-title architecture |
+| 5 — QA | ✅ Done | 118 passed, 3 skipped; `/code-review` findings fixed; concurrency test confirms no SCStream interruption; live end-to-end on a real Thai-named meeting returns the exact title twice with clean stderr |
+| 6 — Release | 🔄 In progress | v1.2.0 + v1.2.2 published (both still mis-name recordings that start on pre-join). v1.2.1 never published. v1.2.3 pending publish |
 
 ## Open items
 
-- [x] Live-verify OCR correctly returns non-zero/no-title when *not* in a call — confirmed: `ERROR: no_teams_windows_found`, exit 1, no stdout
-- [x] Verify OCR capture doesn't disturb an active recording — **confirmed it DID disturb it** via the old subprocess-spawn design; fixed via the in-process `title` command; re-confirmed clean with the fix
-- [ ] Thai-language Teams UI — the position-based extraction (title row above timer row) should be language-independent, but hasn't been observed on an actual Thai-language Teams client; verify when possible
-- [ ] Thai-language meeting *title* OCR accuracy — untested, no Thai-titled meeting was live during development
-- [ ] Ad-hoc (non-calendar) call title OCR, end to end with v1.2.2 — the 2026-09-01 test ("Test for Team Record ครับ") hit both bugs above before a title could be confirmed; retest now that both are fixed
-- [ ] Upgrade test: does replacing the installed `.app` re-trigger TCC permission prompts? Unknown until tested — document actual result in `docs/user/troubleshooting.md`
-- [ ] Gatekeeper screenshot (carried over from v1.0, still open) — `docs/user/images/gatekeeper-bypass.png`
+- [x] OCR returns nothing when not in a call — confirmed (`no_teams_windows_found`, exit 1)
+- [x] Capture doesn't disturb an active recording — confirmed broken via subprocess-spawn, fixed in-process, re-verified clean
+- [x] Thai meeting-title accuracy — **OCR fails** (`ครับ` → `Ašu`/`nu`); fixed by sourcing the name from `SCWindow.title`, verified exact end-to-end
+- [x] Root cause of "still named Teams Meeting" — pre-join screen, confirmed by `--diagnose-title`
+- [ ] Thai-language Teams **UI** (menu/section names in Thai) — window-title parsing strips only `" | Microsoft Teams"` / `"Meeting join | "`, which are likely localized too; unverified, would need a Thai-UI Teams client
+- [ ] The user reported some failures while genuinely in-call — never reproduced; the ~15s retry loop should cover it regardless of cause, but watch for recurrence
+- [ ] Upgrade test: does replacing the installed `.app` re-trigger TCC prompts? Still unverified — document the real result in `docs/user/troubleshooting.md`
+- [ ] Gatekeeper screenshot (carried over from v1.0) — `docs/user/images/gatekeeper-bypass.png`
 
 ## Blocking decisions made
 
-- OCR during an active recording MUST run in-process (the `title` stdin command on the already-recording `recorder` process) — a separate spawned `recorder --meeting-title` process is a different ScreenCaptureKit client and interrupts the recording's own SCStream (confirmed, was a real shipped bug in v1.2.0)
-- The standalone `--meeting-title` CLI mode still exists for `make doctor` / manual testing, but must never run while a recording is in progress
+- **Meeting NAME comes from `SCWindow.title`, never OCR** — OCR mangles Thai, differently each sample (proven). OCR's only job is reading the call timer to identify the live-call window.
+- Recording commonly starts on Teams' **pre-join screen** (it opens UDP media sockets before "Join now") — a `"Meeting join | …"` window is an accepted name source, and Python keeps re-asking until the call proper is joined
+- OCR during an active recording MUST run in-process (the `title` stdin command) — a separate spawned `recorder --meeting-title` process is a different ScreenCaptureKit client and interrupts the recording's own SCStream (was a real shipped bug in v1.2.0)
 - Window capture uses `SCContentFilter(desktopIndependentWindow:)`, never coordinate-based `screencapture -R` — proven unsafe (captured an unrelated app's window when Teams moved)
-- Confidence gate: only trust an OCR'd title if the same window also shows a live call timer (`HH:MM:SS`) — prevents reading Chat/Calendar window titles instead of the real meeting
-- Title extraction is position-based (longest line above the timer's row), not an English word list — language-independent, doesn't misclassify numeric/short titles
+- Build the diagnostic before shipping the fix — three releases were spent on unverified hypotheses; `--diagnose-title` settled it in minutes
 - Phase 3 (manual rename UI) deferred to v1.3.0

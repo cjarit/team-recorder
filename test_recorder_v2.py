@@ -927,6 +927,21 @@ def test_get_meeting_title_from_screen_unexpected_response_is_none(monkeypatch):
     assert v2.get_meeting_title_from_screen(proc) is None
 
 
+def test_get_meeting_title_from_screen_preserves_thai(monkeypatch):
+    """Thai meeting names must survive intact — the whole reason the name comes
+    from the window title instead of OCR (OCR mangled 'ครับ' → 'Ašu'/'nu')."""
+    proc = _make_proc(stdout_lines=["TITLE Test for Team Record ครับ"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    assert v2.get_meeting_title_from_screen(proc) == "Test for Team Record ครับ"
+
+
+def test_get_meeting_title_from_screen_name_with_pipe(monkeypatch):
+    """A meeting name containing ' | ' must not be truncated by the TITLE prefix split."""
+    proc = _make_proc(stdout_lines=["TITLE Design | Weekly Sync"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    assert v2.get_meeting_title_from_screen(proc) == "Design | Weekly Sync"
+
+
 def test_stop_recording_v2_stopped_error_renames_incomplete(monkeypatch, tmp_path):
     """STOPPED_ERROR response → _rename_as_incomplete called, rename_recording NOT called."""
     rec_path = tmp_path / "rec_10-00_01-01-2026.m4a"
