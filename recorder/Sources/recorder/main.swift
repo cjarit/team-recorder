@@ -32,6 +32,11 @@ import Vision
 private let kSampleRate: Double = 16_000
 private let kBitrate:    Int    = 32_000
 private let kChannels:   Int    = 1
+// เขียน index เป็นช่วงๆ — process โดน kill กลางทางไฟล์ยังเปิดได้ถึง fragment ล่าสุด
+private let kFragmentSeconds: Double = 10
+// teardown ไมค์ค้างเกินนี้ → exit ให้ Python respawn (ต้องตรงกับ RESPAWN_EXIT_CODE ใน teams_recorder_v2.py)
+private let kTeardownTimeoutSeconds: Double = 5
+private let kExitTeardownHung: Int32 = 3
 
 private func aacOutputSettings() -> [String: Any] {
     [AVFormatIDKey:          kAudioFormatMPEG4AAC,
@@ -248,35 +253,15 @@ final class RecorderEngine {
         let sema = DispatchSemaphore(value: 0)
         let lock = NSLock()
         var emitted = false
-        private var writer: AVAssetWriter?
-
-        func setWriter(_ writer: AVAssetWriter?) {
-            lock.lock()
-            self.writer = writer
-            lock.unlock()
-        }
-
-        func cancelWriter() {
-            lock.lock()
-            let w = writer
-            writer = nil
-            lock.unlock()
-            w?.cancelWriting()
-        }
 
         func markEmitted() -> Bool {
             lock.lock()
             defer { lock.unlock() }
             guard !emitted else { return false }
             emitted = true
-            writer = nil
             return true
         }
     }
-
-    // Tracks the current stop only so timeout cleanup can find the writer.
-    private let finishLock = NSLock()
-    private var finishContext: StopContext?
 
     // MARK: – Start
 
@@ -298,6 +283,7 @@ final class RecorderEngine {
 
         let url = URL(fileURLWithPath: path)
         let w   = try AVAssetWriter(outputURL: url, fileType: .m4a)
+        w.movieFragmentInterval = CMTime(seconds: kFragmentSeconds, preferredTimescale: 600)
 
         let sys = AVAssetWriterInput(mediaType: .audio,
                                       outputSettings: aacOutputSettings())
@@ -344,26 +330,43 @@ final class RecorderEngine {
 
     // MARK: – Stop
 
-    /// Synchronous: blocks until the file is fully written to disk.
+    /// Synchronous: finalizes the file and emits the stop response first, then tears
+    /// down capture. Every step is time-bounded so a stuck audio device can never
+    /// cost the recording.
     func stop() {
         guard isRecording else { return }
         isRecording = false
-        stopMic()
-        stopSCK()
+        // ปิดไฟล์ก่อนปิดไมค์/SCK — 2026-09-28 stopMic() ค้างตอนหูฟัง BT สลับ แล้วไฟล์ไม่ได้ปิดเลย
         // Short grace so any in-flight buffers on writeQ can land
         let context = StopContext()
-        finishLock.lock()
-        finishContext = context
-        finishLock.unlock()
         writeQ.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.finishWriter(context)
         }
         if context.sema.wait(timeout: .now() + 10) == .timedOut {
-            context.cancelWriter()
+            // ห้าม cancelWriting() — มันลบไฟล์ทิ้ง; fragment ที่เขียนไปแล้วยังเล่นได้
             writer = nil
             sysTrack = nil
             micTrack = nil
             emitStopResponse("STOPPED_ERROR: finishWriting_timeout", context: context)
+        }
+        teardownCapture()
+    }
+
+    /// Stops mic and SCK after the file is closed. Mic teardown runs on main, the same
+    /// queue as handleMicConfigChange, so AVAudioEngine is never touched from two
+    /// threads. If it does not finish in time the engine is unusable: exit so Python
+    /// respawns a clean process.
+    private func teardownCapture() {
+        let micDone = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async { [weak self] in
+            self?.stopMic()
+            micDone.signal()
+        }
+        let micStopped = micDone.wait(timeout: .now() + kTeardownTimeoutSeconds) == .success
+        stopSCK()
+        if !micStopped {
+            fputs("[recorder] audio teardown hung — exiting for respawn\n", stderr)
+            exit(kExitTeardownHung)
         }
     }
 
@@ -767,7 +770,6 @@ final class RecorderEngine {
         micTrack = nil
         let w = writer
         writer = nil
-        context.setWriter(w)
         if let w {
             w.finishWriting { [weak self] in
                 // Emit outcome token so Python can distinguish success from disk/AVFoundation errors.
@@ -787,13 +789,6 @@ final class RecorderEngine {
 
     private func emitStopResponse(_ token: String, context: StopContext) {
         guard context.markEmitted() else { return }
-
-        finishLock.lock()
-        if finishContext === context {
-            finishContext = nil
-        }
-        finishLock.unlock()
-
         emit(token)
         context.sema.signal()
     }

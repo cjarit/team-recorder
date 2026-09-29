@@ -422,26 +422,37 @@ def sanitize_filename(name: str) -> str:
 def _rename_as_incomplete(session: dict):
     """Rename recording to INCOMPLETE_* when binary crashes or finishWriting fails.
     Reusable by both the crash path and the STOPPED_ERROR protocol path.
+    Uses the meeting name when known, so the file stays identifiable without
+    opening it. Falls back to the plain timestamp-only name when unknown.
     """
     src           = session.get("recording_path", "")
     recording_dir = session.get("recording_dir", RECORDING_DIR)
+    meeting_name  = session.get("meeting_name")
+
+    def _base_name(ts: str) -> str:
+        if meeting_name:
+            return f"INCOMPLETE_{sanitize_filename(meeting_name)} - {ts}.m4a"
+        return f"INCOMPLETE_{ts}.m4a"
+
+    def _with_part(ts: str, part: int) -> str:
+        base, ext = os.path.splitext(_base_name(ts))
+        return f"{base}_part{part}{ext}"
+
     try:
         if os.path.exists(src) and os.path.getsize(src) > 0:
             ts_crash = session["start_time"].strftime("%H-%M_%d-%m-%Y")
-            dest = os.path.join(recording_dir, f"INCOMPLETE_{ts_crash}.m4a")
+            dest = os.path.join(recording_dir, _base_name(ts_crash))
             part = 2
             while os.path.exists(dest) and part <= 99:
-                dest = os.path.join(recording_dir,
-                                    f"INCOMPLETE_{ts_crash}_part{part}.m4a")
+                dest = os.path.join(recording_dir, _with_part(ts_crash, part))
                 part += 1
             if os.path.exists(dest):
                 # part1-99 all taken — fall back to wall-clock timestamp with collision check
                 ts_now = datetime.now().strftime("%H-%M-%S_%d-%m-%Y")
-                dest = os.path.join(recording_dir, f"INCOMPLETE_{ts_now}.m4a")
+                dest = os.path.join(recording_dir, _base_name(ts_now))
                 part = 2
                 while os.path.exists(dest) and part <= 99:
-                    dest = os.path.join(recording_dir,
-                                        f"INCOMPLETE_{ts_now}_part{part}.m4a")
+                    dest = os.path.join(recording_dir, _with_part(ts_now, part))
                     part += 1
             os.rename(src, dest)
             log(f"[WARN] บันทึกบางส่วน: {os.path.basename(dest)}")
@@ -635,6 +646,15 @@ def notify(title: str, message: str):
         pass  # notification ล้มเหลวต้องไม่กระทบการอัด
 
 
+_last_status_cache: dict = {
+    "last_recording_path": None,
+    "last_recording_name": None,
+    "last_saved_at": None,
+    "last_status": None,
+    "last_fallback_reason": None,
+}
+
+
 def write_status(state: str, meeting_name=None, recording_path=None,
                  started_at=None, last_error=None,
                  last_recording_path=None, last_recording_name=None,
@@ -645,7 +665,20 @@ def write_status(state: str, meeting_name=None, recording_path=None,
     state: idle | waiting | recording | stopping | error
     last_recording_* — คงอยู่ใน waiting state เพื่อให้ menu bar app แสดงไฟล์ล่าสุด
     last_fallback_reason — set when the recording fell back to "Teams Meeting"
+    เมื่อมีการส่ง last_* มาจริง (ไม่ None ทั้งหมด) จะจำไว้ใน _last_status_cache
+    เพื่อให้ respawn path (crash / planned) ส่งต่อได้โดยไม่ต้อง overwrite เป็น None
     """
+    global _last_status_cache
+    if any(v is not None for v in (
+            last_recording_path, last_recording_name,
+            last_saved_at, last_status, last_fallback_reason)):
+        _last_status_cache = {
+            "last_recording_path": last_recording_path,
+            "last_recording_name": last_recording_name,
+            "last_saved_at": last_saved_at,
+            "last_status": last_status,
+            "last_fallback_reason": last_fallback_reason,
+        }
     try:
         os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
         payload = {
@@ -786,6 +819,8 @@ def check_recorder_ready() -> bool:
 DISK_ABORT_MB      = 200  # match kMinFreeBytes ใน Swift binary — ต้องตรงกัน
 DISK_WARN_MB       = 500  # warn ล่วงหน้าก่อนถึงขีดหยุด
 MAX_CRASH_RESTARTS = 3    # respawn binary ได้สูงสุดกี่ครั้งก่อน abort
+RESPAWN_EXIT_CODE  = 3    # exit code ที่ binary ใช้ตอน audio teardown ค้างหลัง
+                          # ตอบ STOPPED_OK/STOPPED_ERROR ไปแล้ว — ไม่ใช่ crash จริง
 
 def check_disk_space(recording_dir: str) -> bool:
     """ตรวจ disk space ก่อนเริ่ม recording
@@ -1406,6 +1441,27 @@ def run_index() -> int:
     return 0
 
 
+# ─── Phase 2B: planned respawn (audio teardown hang after stop) ──
+
+def _is_planned_respawn(exit_code: "int | None", session: "dict | None") -> bool:
+    """True เมื่อ binary exit ด้วย RESPAWN_EXIT_CODE หลัง stop เสร็จแล้ว
+    (session เป็น None แปลว่า stop_recording_v2 ได้ STOPPED_OK/STOPPED_ERROR แล้ว) —
+    ไม่ใช่ crash จริง exit code นี้ระหว่างมี active session ยังถือเป็น crash ตามปกติ
+    """
+    return exit_code == RESPAWN_EXIT_CODE and session is None
+
+
+def _attempt_planned_respawn() -> "subprocess.Popen | None":
+    """Respawn recorder หลัง planned exit — ไม่นับ crash_restart_count, ไม่แจ้ง
+    crash notification, และ preserve last_* status ผ่าน _last_status_cache
+    Returns: new proc หรือ None ถ้า connect ล้มเหลว (caller fallback ไป crash path ปกติ)
+    """
+    new_proc = connect_recorder()
+    if new_proc:
+        write_status("waiting", **_last_status_cache)
+    return new_proc
+
+
 # ─── Phase 2A: crash auto-restart ────────────────────────────
 
 def _attempt_crash_restart(
@@ -1448,9 +1504,9 @@ def _attempt_crash_restart(
             log(f"▶  Recording segment {crash_count + 1} เริ่มแล้ว")
         else:
             log("[WARN] เริ่ม recording segment ใหม่ไม่ได้ — รอ loop ถัดไป")
-            write_status("waiting")
+            write_status("waiting", **_last_status_cache)
     else:
-        write_status("waiting")
+        write_status("waiting", **_last_status_cache)
 
     return new_proc, new_session
 
@@ -1596,6 +1652,16 @@ def main():
         while True:
             # ตรวจ binary ยังอยู่ไหม — ถ้าตายให้ respawn แทนที่จะหยุดทั้งหมด
             if proc.poll() is not None:
+                exit_code = proc.poll()
+                if _is_planned_respawn(exit_code, session):
+                    remove_recorder_pid_file()
+                    log("[INFO] recorder ขอ restart หลัง stop (audio teardown ค้าง) — respawn")
+                    new_proc = _attempt_planned_respawn()
+                    if new_proc:
+                        proc = new_proc
+                        continue
+                    log("[WARN] planned respawn ล้มเหลว — fallback ไป crash restart ปกติ")
+
                 remove_recorder_pid_file()
                 crash_restart_count += 1
                 log(f"[ERROR] recorder binary จบกะทันหัน "

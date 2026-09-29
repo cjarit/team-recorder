@@ -723,6 +723,64 @@ def test_binary_crash_empty_file_not_saved(tmp_path):
     assert len(incomplete) == 0, "empty file must not be saved as INCOMPLETE"
 
 
+def test_rename_as_incomplete_uses_meeting_name_when_known(tmp_path):
+    """When session['meeting_name'] is known, the INCOMPLETE_ file must carry
+    it — fixes the 2026-09-28 incident where a named meeting still produced a
+    bare INCOMPLETE_<timestamp>.m4a."""
+    rec_path = tmp_path / "rec.m4a"
+    rec_path.write_bytes(b"partial audio data")
+
+    session = {
+        "start_time":     datetime(2026, 1, 28, 14, 1, 0),
+        "recording_path": str(rec_path),
+        "recording_dir":  str(tmp_path),
+        "meeting_name":   "[Gold wallet] Internal Sync up",
+    }
+    dest = v2._rename_as_incomplete(session)
+
+    ts = session["start_time"].strftime("%H-%M_%d-%m-%Y")
+    expected = f"INCOMPLETE_{v2.sanitize_filename('[Gold wallet] Internal Sync up')} - {ts}.m4a"
+    assert os.path.basename(dest) == expected
+    assert not rec_path.exists()
+
+
+def test_rename_as_incomplete_named_collision_appends_part(tmp_path):
+    """A second incomplete recording for the same named meeting/timestamp
+    must not clobber the first — appends _part2 like the unnamed path does."""
+    ts = datetime(2026, 1, 28, 14, 1, 0).strftime("%H-%M_%d-%m-%Y")
+    clean = v2.sanitize_filename("[Gold wallet] Internal Sync up")
+    existing = tmp_path / f"INCOMPLETE_{clean} - {ts}.m4a"
+    existing.write_bytes(b"already there")
+
+    rec_path = tmp_path / "rec.m4a"
+    rec_path.write_bytes(b"partial audio data")
+    session = {
+        "start_time":     datetime(2026, 1, 28, 14, 1, 0),
+        "recording_path": str(rec_path),
+        "recording_dir":  str(tmp_path),
+        "meeting_name":   "[Gold wallet] Internal Sync up",
+    }
+    dest = v2._rename_as_incomplete(session)
+
+    assert os.path.basename(dest) == f"INCOMPLETE_{clean} - {ts}_part2.m4a"
+    assert existing.exists(), "original part1 file must be untouched"
+
+
+def test_rename_as_incomplete_unnamed_unchanged(tmp_path):
+    """No meeting_name → behaviour stays exactly as before this change."""
+    rec_path = tmp_path / "rec.m4a"
+    rec_path.write_bytes(b"partial audio data")
+    session = {
+        "start_time":     datetime(2026, 1, 28, 14, 1, 0),
+        "recording_path": str(rec_path),
+        "recording_dir":  str(tmp_path),
+        "meeting_name":   None,
+    }
+    dest = v2._rename_as_incomplete(session)
+    ts = session["start_time"].strftime("%H-%M_%d-%m-%Y")
+    assert os.path.basename(dest) == f"INCOMPLETE_{ts}.m4a"
+
+
 # ─── P2-A: meetings cache ─────────────────────────────────────
 
 def test_meetings_cache_invalidates_on_new_day(monkeypatch):
@@ -1094,6 +1152,50 @@ def test_write_status_writes_atomic_json(monkeypatch, tmp_path):
     assert not (tmp_path / "status.json.tmp").exists(), "temp file left behind"
 
 
+_DEFAULT_LAST_STATUS_CACHE = {
+    "last_recording_path": None,
+    "last_recording_name": None,
+    "last_saved_at": None,
+    "last_status": None,
+    "last_fallback_reason": None,
+}
+
+
+def test_write_status_caches_last_fields_when_present(monkeypatch, tmp_path):
+    """write_status remembers the last_* values it was given — the basis for
+    respawn preserving them instead of overwriting with None."""
+    status = tmp_path / "status.json"
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(v2, "STATUS_FILE", str(status))
+    monkeypatch.setattr(v2, "_last_status_cache", dict(_DEFAULT_LAST_STATUS_CACHE))
+    v2.write_status(
+        "error",
+        last_error="STOPPED_ERROR: disk full",
+        last_recording_path="/rec/INCOMPLETE_x.m4a",
+        last_recording_name="INCOMPLETE_x.m4a",
+        last_saved_at="2026-09-28T14:01:00",
+        last_status="incomplete",
+    )
+    assert v2._last_status_cache["last_recording_path"] == "/rec/INCOMPLETE_x.m4a"
+    assert v2._last_status_cache["last_recording_name"] == "INCOMPLETE_x.m4a"
+    assert v2._last_status_cache["last_status"] == "incomplete"
+
+
+def test_write_status_waiting_without_last_fields_does_not_clear_cache(monkeypatch, tmp_path):
+    """A write_status('waiting') call with no last_* args (e.g. a plain crash
+    restart with nothing to report yet) must not wipe a previously cached
+    last_* set — only a call that actually supplies last_* values updates it."""
+    status = tmp_path / "status.json"
+    monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(v2, "STATUS_FILE", str(status))
+    monkeypatch.setattr(v2, "_last_status_cache", dict(_DEFAULT_LAST_STATUS_CACHE))
+    v2.write_status("error", last_recording_path="/rec/INCOMPLETE_x.m4a",
+                    last_status="incomplete")
+    v2.write_status("waiting")
+    assert v2._last_status_cache["last_recording_path"] == "/rec/INCOMPLETE_x.m4a"
+    assert v2._last_status_cache["last_status"] == "incomplete"
+
+
 def test_pid_file_write_and_remove(monkeypatch, tmp_path):
     pid_file = tmp_path / "team-recorder.pid"
     monkeypatch.setattr(v2, "APP_SUPPORT_DIR", str(tmp_path))
@@ -1404,6 +1506,87 @@ def test_crash_restart_renames_incomplete_before_respawn(monkeypatch, tmp_path):
         recording_dir=str(tmp_path), crash_count=1,
     )
     assert rename_calls == [], "_attempt_crash_restart must not rename — caller's job"
+
+
+def test_attempt_crash_restart_waiting_passes_through_last_status_cache(monkeypatch, tmp_path):
+    """The write_status('waiting') calls inside _attempt_crash_restart must
+    forward the cached last_* values instead of the defaults — otherwise a
+    respawn wipes the menu bar's knowledge of a just-failed recording."""
+    fake_proc = object()
+    monkeypatch.setattr(v2, "notify",           lambda *a, **k: None)
+    monkeypatch.setattr(v2, "connect_recorder", lambda: fake_proc)
+    monkeypatch.setattr(v2, "_last_status_cache", {
+        "last_recording_path": "/rec/INCOMPLETE_x.m4a",
+        "last_recording_name": "INCOMPLETE_x.m4a",
+        "last_saved_at": "2026-09-28T14:01:00",
+        "last_status": "incomplete",
+        "last_fallback_reason": None,
+    })
+    status_calls = []
+    monkeypatch.setattr(v2, "write_status", lambda *a, **k: status_calls.append((a, k)))
+
+    v2._attempt_crash_restart(
+        session=None, in_meeting=False,
+        recording_dir=str(tmp_path), crash_count=1,
+    )
+
+    waiting_calls = [k for a, k in status_calls if a and a[0] == "waiting"]
+    assert waiting_calls, "expected a write_status('waiting') call"
+    assert waiting_calls[0]["last_recording_path"] == "/rec/INCOMPLETE_x.m4a"
+    assert waiting_calls[0]["last_status"] == "incomplete"
+
+
+# ─── Phase 2B: planned respawn (audio teardown hang after stop) ──
+
+def test_is_planned_respawn_true_when_no_active_session():
+    assert v2._is_planned_respawn(v2.RESPAWN_EXIT_CODE, None) is True
+
+
+def test_is_planned_respawn_false_with_active_session():
+    """Exit code 3 while a session is still active is a real crash, not a
+    planned respawn — the binary should not have exited mid-recording."""
+    session = {"meeting_name": "Standup"}
+    assert v2._is_planned_respawn(v2.RESPAWN_EXIT_CODE, session) is False
+
+
+def test_is_planned_respawn_false_for_other_exit_codes():
+    assert v2._is_planned_respawn(1, None) is False
+
+
+def test_attempt_planned_respawn_success_writes_waiting_with_cache(monkeypatch):
+    fake_proc = object()
+    monkeypatch.setattr(v2, "connect_recorder", lambda: fake_proc)
+    monkeypatch.setattr(v2, "_last_status_cache", {
+        "last_recording_path": "/rec/x.m4a",
+        "last_recording_name": "x.m4a",
+        "last_saved_at": "2026-09-28T14:01:00",
+        "last_status": "complete",
+        "last_fallback_reason": None,
+    })
+    status_calls = []
+    monkeypatch.setattr(v2, "write_status", lambda *a, **k: status_calls.append((a, k)))
+
+    result = v2._attempt_planned_respawn()
+
+    assert result is fake_proc
+    assert len(status_calls) == 1
+    args, kwargs = status_calls[0]
+    assert args[0] == "waiting"
+    assert kwargs["last_recording_path"] == "/rec/x.m4a"
+    assert kwargs["last_status"] == "complete"
+
+
+def test_attempt_planned_respawn_connect_fails_returns_none_no_status_write(monkeypatch):
+    """connect_recorder failing must not write a status — caller falls back
+    to the normal crash-restart path instead."""
+    monkeypatch.setattr(v2, "connect_recorder", lambda: None)
+    status_calls = []
+    monkeypatch.setattr(v2, "write_status", lambda *a, **k: status_calls.append((a, k)))
+
+    result = v2._attempt_planned_respawn()
+
+    assert result is None
+    assert status_calls == []
 
 
 # ════════════════════════════════════════════════════════════════════
