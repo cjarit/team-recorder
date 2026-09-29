@@ -37,6 +37,10 @@ private let kFragmentSeconds: Double = 10
 // teardown ไมค์ค้างเกินนี้ → exit ให้ Python respawn (ต้องตรงกับ RESPAWN_EXIT_CODE ใน teams_recorder_v2.py)
 private let kTeardownTimeoutSeconds: Double = 5
 private let kExitTeardownHung: Int32 = 3
+// ไมค์ตามหลังเสียงระบบเกินนี้ (วินาที) → เติมความเงียบให้ track ไมค์
+private let kMicMaxLag: Double = 1
+// gain ต่อ track ตอนรวมเป็น track เดียว (--mixdown)
+private let kMixdownTrackGain: Double = 0.8
 
 private func aacOutputSettings() -> [String: Any] {
     [AVFormatIDKey:          kAudioFormatMPEG4AAC,
@@ -229,6 +233,9 @@ final class RecorderEngine {
     private var micConverter:  AVAudioConverter?
     private var micConfigObserver: NSObjectProtocol?
     private var micRestartPending = false
+    // AVAudioEngine ค้างได้เป็นชั่วโมงตอนหูฟัง BT สลับ HFP/A2DP (2026-09-28/29) — ทุก call ไป engine
+    // อยู่บน queue นี้เท่านั้น และ start/stop ห้ามรอมันแบบไม่มี timeout
+    private let micQ = DispatchQueue(label: "io.teams-recorder.mic", qos: .userInteractive)
 
     // SCK stream recovery (sleep/wake, display change)
     // Both flags and the wake observer are only touched on the main queue
@@ -310,8 +317,8 @@ final class RecorderEngine {
         micSamples = 0
         isRecording = true
 
-        // Start mic (non-fatal if permission denied — falls back to system audio only)
-        startMic()
+        // Mic starts async on micQ — never blocks STARTED; silence fill covers it until it joins
+        micQ.async { [weak self] in self?.startMic() }
 
         // Start SCK (fatal if permission denied or display unavailable)
         do {
@@ -320,7 +327,7 @@ final class RecorderEngine {
             // ── Rollback: SCK failed → undo everything so the session is clean ──
             // ถ้า SCK ล้มเหลว ต้อง rollback state ทั้งหมดก่อน throw ต่อ
             isRecording = false
-            stopMic()
+            micQ.async { [weak self] in self?.stopMic() }
             let failedWriter = writer; writer = nil
             sysTrack = nil; micTrack = nil
             failedWriter?.cancelWriting()
@@ -352,13 +359,12 @@ final class RecorderEngine {
         teardownCapture()
     }
 
-    /// Stops mic and SCK after the file is closed. Mic teardown runs on main, the same
-    /// queue as handleMicConfigChange, so AVAudioEngine is never touched from two
-    /// threads. If it does not finish in time the engine is unusable: exit so Python
-    /// respawns a clean process.
+    /// Stops mic and SCK after the file is closed. Mic teardown runs on micQ, behind any
+    /// still-running mic start or restart. If it does not finish in time the engine is
+    /// unusable: exit so Python respawns a clean process.
     private func teardownCapture() {
         let micDone = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async { [weak self] in
+        micQ.async { [weak self] in
             self?.stopMic()
             micDone.signal()
         }
@@ -373,6 +379,7 @@ final class RecorderEngine {
     // MARK: – Mic (AVAudioEngine)
 
     private func startMic() {
+        guard isRecording else { return }
         // Fresh engine each session: reset() alone leaves stale format state that
         // causes installTap to throw "format mismatch" on the second recording.
         audioEngine = AVAudioEngine()
@@ -398,8 +405,8 @@ final class RecorderEngine {
             micConfigObserver = NotificationCenter.default.addObserver(
                 forName: .AVAudioEngineConfigurationChange,
                 object: audioEngine,
-                queue: .main
-            ) { [weak self] _ in self?.handleMicConfigChange() }
+                queue: nil
+            ) { [weak self] _ in self?.micQ.async { self?.handleMicConfigChange() } }
         } catch {
             // Mic unavailable (permission denied, no input device) — continue with system audio
             fputs("[recorder] mic unavailable: \(error.localizedDescription) — system audio only\n",
@@ -420,7 +427,7 @@ final class RecorderEngine {
         // no reset() — startMic() replaces the engine entirely
     }
 
-    private func handleMicConfigChange(retryCount: Int = 0, outageStart: Date = Date()) {
+    private func handleMicConfigChange(retryCount: Int = 0) {
         guard isRecording, !micRestartPending else { return }
         micRestartPending = true
         if retryCount == 0 {
@@ -438,34 +445,25 @@ final class RecorderEngine {
         micConverter = nil
 
         // 0.5 s settle: macOS needs a moment to fully expose the new default device
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        // Timestamps across the gap are handled by fillMicSilence(), not here
+        micQ.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self, self.isRecording else { return }
-
-            // Advance micSamples BEFORE starting the engine so the first resumed buffer
-            // is written with the correct post-gap timestamp (not the pre-gap value).
-            // Measured from the original disconnect so retries don't double-advance.
-            let gapFrames = Int64(Date().timeIntervalSince(outageStart) * kSampleRate)
-            self.writeQ.sync { self.micSamples += gapFrames }
 
             self.startMic()  // fresh engine + re-installs tap + re-registers observer
 
             if self.micConfigObserver != nil {
                 self.micRestartPending = false
             } else if retryCount < 3 {
-                // startMic failed — undo the gap advance so next retry re-measures correctly
-                self.writeQ.sync { self.micSamples -= gapFrames }
                 // startMic failed (device not ready) — retry with backoff
                 let delay = Double(retryCount + 1)   // 1s, 2s, 3s
                 fputs("[recorder] mic restart failed — retry \(retryCount+1)/3 in \(delay)s\n",
                       stderr)
                 self.micRestartPending = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                    self?.handleMicConfigChange(retryCount: retryCount + 1,
-                                               outageStart: outageStart)
+                self.micQ.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.handleMicConfigChange(retryCount: retryCount + 1)
                 }
             } else {
-                // All retries exhausted — undo gap advance; mic will be silent for remainder
-                self.writeQ.sync { self.micSamples -= gapFrames }
+                // All retries exhausted — mic will be silent for remainder
                 fputs("[recorder] mic restart failed after 3 retries — continuing without mic\n",
                       stderr)
                 self.micRestartPending = false
@@ -758,6 +756,33 @@ final class RecorderEngine {
         sysSamples += Int64(n)
         if let stamped = restamp(buffer, pts: pts) {
             track.append(stamped)
+        }
+        fillMicSilence()
+    }
+
+    /// Keeps the mic track within kMicMaxLag of the system-audio clock by appending
+    /// silence while the mic delivers nothing (not started yet, stuck, or restarting).
+    /// Without it AVAssetWriter stops writing fragments (seen after ~220 s) and a late
+    /// mic would be stamped at the wrong time. Runs on writeQ.
+    private func fillMicSilence() {
+        let lag = sysSamples - micSamples
+        guard lag > Int64(kMicMaxLag * kSampleRate) else { return }
+        // ทีละไม่เกิน 10s — หลัง sleep นาน lag อาจเป็นชั่วโมง ห้าม allocate ทีเดียว
+        let n = min(lag, Int64(10 * kSampleRate))
+        guard
+              let track = micTrack, track.isReadyForMoreMediaData,
+              let silence = AVAudioPCMBuffer(pcmFormat: targetMicFmt,
+                                             frameCapacity: AVAudioFrameCount(n))
+        else { return }
+        silence.frameLength = AVAudioFrameCount(n)
+        if let ch = silence.floatChannelData {
+            for c in 0..<Int(targetMicFmt.channelCount) {
+                ch[c].update(repeating: 0, count: Int(n))
+            }
+        }
+        let pts = CMTime(value: micSamples, timescale: CMTimeScale(kSampleRate))
+        if let sb = makeSampleBuffer(from: silence, pts: pts), track.append(sb) {
+            micSamples += n
         }
     }
 
@@ -1233,6 +1258,90 @@ private func runStdinProtocol() {
     }
 }
 
+// ─── Mixdown (--mixdown <file>) ──────────────────────────────
+// NotebookLM (และ tool ส่วนใหญ่) อ่านแค่ audio track แรก → เสียงไมค์ (track 2) หายจาก transcript
+// พิสูจน์แล้ว 2026-09-29 ด้วยไฟล์ทดสอบ 2 track — จึงรวมเป็น track เดียวหลังอัดเสร็จ
+
+/// Replaces a multi-track recording with a single mixed mono track, in place.
+/// The original is kept untouched unless the mixed file decodes to the same duration.
+/// Exit 0 = mixed or already single-track, 1 = failed (original unchanged).
+func runMixdown(path: String) -> Int32 {
+    let url   = URL(fileURLWithPath: path)
+    let asset = AVURLAsset(url: url)
+    let sema  = DispatchSemaphore(value: 0)
+    var tracks: [AVAssetTrack] = []
+    var srcDuration = CMTime.zero
+    Task {
+        tracks      = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+        srcDuration = (try? await asset.load(.duration)) ?? .zero
+        sema.signal()
+    }
+    guard sema.wait(timeout: .now() + 30) == .success else {
+        fputs("ERROR: mixdown_load_timeout\n", stderr); return 1
+    }
+    if tracks.count < 2 { return 0 }
+    func failure(_ what: String) -> NSError {
+        NSError(domain: "RecorderError", code: 2, userInfo: [NSLocalizedDescriptionKey: what])
+    }
+
+    let dir = url.deletingLastPathComponent()
+    let tmp = dir.appendingPathComponent(".mixing-" + url.lastPathComponent)
+    try? FileManager.default.removeItem(at: tmp)
+    do {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
+            AVFormatIDKey:            kAudioFormatLinearPCM,
+            AVSampleRateKey:          kSampleRate,
+            AVNumberOfChannelsKey:    kChannels,
+            AVLinearPCMBitDepthKey:   32,
+            AVLinearPCMIsFloatKey:    true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false])
+        // ลดแต่ละฝั่งก่อนรวม — เสียงสองฝั่งดังพร้อมกันแล้วชนเพดาน (52 จุดใน 78s, ทดสอบ 2026-09-29)
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = tracks.map { track in
+            let p = AVMutableAudioMixInputParameters(track: track)
+            p.setVolume(Float(kMixdownTrackGain), at: .zero)
+            return p
+        }
+        output.audioMix = mix
+        reader.add(output)
+        let writer = try AVAssetWriter(outputURL: tmp, fileType: .m4a)
+        let input  = AVAssetWriterInput(mediaType: .audio, outputSettings: aacOutputSettings())
+        input.expectsMediaDataInRealTime = false
+        writer.add(input)
+        guard reader.startReading(), writer.startWriting() else {
+            throw reader.error ?? writer.error ?? failure("could not start")
+        }
+        writer.startSession(atSourceTime: .zero)
+        while let sb = output.copyNextSampleBuffer() {
+            while !input.isReadyForMoreMediaData { usleep(2_000) }
+            guard input.append(sb) else { throw writer.error ?? failure("append failed") }
+        }
+        guard reader.status == .completed else { throw reader.error ?? failure("read incomplete") }
+        input.markAsFinished()
+        let done = DispatchSemaphore(value: 0)
+        writer.finishWriting { done.signal() }
+        guard done.wait(timeout: .now() + 60) == .success, writer.status == .completed else {
+            throw writer.error ?? failure("finish failed")
+        }
+
+        let mixed = AVURLAsset(url: tmp)
+        var mixedDuration = CMTime.zero
+        Task { mixedDuration = (try? await mixed.load(.duration)) ?? .zero; sema.signal() }
+        _ = sema.wait(timeout: .now() + 30)
+        guard abs(mixedDuration.seconds - srcDuration.seconds) <= 1.0 else {
+            throw failure("duration mismatch \(mixedDuration.seconds) vs \(srcDuration.seconds)")
+        }
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        return 0
+    } catch {
+        try? FileManager.default.removeItem(at: tmp)
+        fputs("ERROR: mixdown_failed — \(error.localizedDescription)\n", stderr)
+        return 1
+    }
+}
+
 // ─── Entry point ──────────────────────────────────────────────
 // Set stdout AND stderr to unbuffered so Python readline() sees responses
 // immediately. On macOS, both are block-buffered when connected to a pipe.
@@ -1262,6 +1371,11 @@ case argv.contains("--request-permission"):
 case argv.contains("--meeting-title"):
     runMeetingTitle()           // calls exit() internally
     exit(1)                     // unreachable; satisfies compiler
+case argv.contains("--mixdown"):
+    guard let idx = argv.firstIndex(of: "--mixdown"), idx + 1 < argv.count else {
+        fputs("ERROR: usage: recorder --mixdown /path/to/file.m4a\n", stderr); exit(1)
+    }
+    exit(runMixdown(path: argv[idx + 1]))
 case argv.contains("--diagnose-title"):
     runDiagnoseTitle()          // calls exit() internally
     exit(1)                     // unreachable; satisfies compiler

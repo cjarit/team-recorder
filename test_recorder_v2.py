@@ -336,16 +336,67 @@ def test_start_recording_v2_ocr_also_fails(monkeypatch, tmp_path):
     assert result["calendar_status"] == v2.CAL_OCR_FAILED
 
 
-def test_start_recording_v2_returns_none_on_timeout(monkeypatch, tmp_path):
-    """stdout never returns STARTED → _readline_timeout returns '' → None"""
-    proc = _make_proc(stdout_lines=[])
+def test_start_recording_v2_returns_start_timeout_and_terminates_proc(monkeypatch, tmp_path):
+    """No STARTED and no ERROR token at all within timeout → START_TIMEOUT sentinel
+    (not None): the process is genuinely unresponsive (incident 2026-09-29:
+    AVAudioEngine hung inside `start` during a Bluetooth headset switch), so the
+    caller must respawn — plain None would let the main loop keep re-sending
+    `start` to the same stuck process forever. The stuck proc must be terminated
+    and status written as 'error' with a diagnosable last_error."""
+    proc = _make_proc(stdout_lines=[], stderr_lines=[])
     monkeypatch.setattr(v2, "check_disk_space", lambda _: True)
-    # simulate timeout: select returns empty list (no data ready)
+    # simulate timeout: select returns empty list (no data ready) for both stdout+stderr
     monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: ([], [], []))
+    status_calls = []
+    monkeypatch.setattr(v2, "write_status",
+                         lambda *a, **k: status_calls.append((a, k)))
+
+    result = v2.start_recording_v2(proc, str(tmp_path))
+
+    assert result == v2.START_TIMEOUT
+    proc.terminate.assert_called_once()
+    assert any(
+        a[:1] == ("error",) and k.get("last_error") ==
+        "recording failed to start (recorder not responding)"
+        for a, k in status_calls
+    )
+
+
+def test_start_recording_v2_explicit_error_token_returns_none_unchanged(monkeypatch, tmp_path):
+    """An explicit ERROR token on stderr (e.g. already_recording, permission denied)
+    is a known failure mode, not a hang — must still return None (old behaviour) and
+    must NOT terminate the proc or signal START_TIMEOUT."""
+    proc = _make_proc(stdout_lines=[], stderr_lines=["ERROR: already_recording"])
+    monkeypatch.setattr(v2, "check_disk_space", lambda _: True)
+
+    stderr_call_count = {"n": 0}
+
+    def fake_select(r, w, x, t):
+        if r and r[0] is proc.stderr:
+            stderr_call_count["n"] += 1
+            return (r, [], []) if stderr_call_count["n"] == 1 else ([], [], [])
+        return ([], [], [])
+
+    monkeypatch.setattr(v2.select, "select", fake_select)
 
     result = v2.start_recording_v2(proc, str(tmp_path))
 
     assert result is None
+    proc.terminate.assert_not_called()
+
+
+def test_start_recording_v2_broken_pipe_returns_start_timeout(monkeypatch, tmp_path):
+    """BrokenPipeError writing 'start' means the proc is already dead — must also
+    signal START_TIMEOUT (not None) so the caller respawns instead of retrying
+    the same dead proc forever."""
+    proc = _make_proc(stdout_lines=[])
+    proc.stdin.write.side_effect = BrokenPipeError()
+    monkeypatch.setattr(v2, "check_disk_space", lambda _: True)
+
+    result = v2.start_recording_v2(proc, str(tmp_path))
+
+    assert result == v2.START_TIMEOUT
+    proc.terminate.assert_called_once()
 
 
 def test_start_recording_v2_returns_none_on_disk_full(monkeypatch, tmp_path):
@@ -1025,6 +1076,40 @@ def test_stop_recording_v2_stopped_error_renames_incomplete(monkeypatch, tmp_pat
     assert len(renamed_inc) == 1, "_rename_as_incomplete must be called on STOPPED_ERROR"
 
 
+def _stop_ok_with_validation(monkeypatch, tmp_path, valid: bool):
+    final = tmp_path / "Meeting - 10-00_01-01-2026.m4a"
+    final.write_bytes(b"audio")
+    proc = _make_proc(stdout_lines=["STOPPED_OK"])
+    monkeypatch.setattr(v2.select, "select", lambda r, w, x, t: (r, [], []))
+    monkeypatch.setattr(v2, "rename_recording", lambda s, d: str(final))
+    monkeypatch.setattr(v2, "validate_recording", lambda p: (valid, "" if valid else "bad"))
+    monkeypatch.setattr(v2, "_rename_as_needs_check", lambda p, r: p)
+    monkeypatch.setattr(v2, "notify", lambda *a: None)
+    spawned = []
+    monkeypatch.setattr(v2.subprocess, "Popen", lambda args, **kw: spawned.append(args))
+    session = {
+        "start_time":     datetime.now() - timedelta(seconds=300),
+        "recording_path": str(tmp_path / "rec.m4a"),
+        "recording_dir":  str(tmp_path),
+        "meeting_name":   "Meeting",
+    }
+    v2.stop_recording_v2(proc, session)
+    return str(final), spawned
+
+
+def test_stop_ok_valid_recording_spawns_mixdown(monkeypatch, tmp_path):
+    """A validated recording gets its tracks merged — NotebookLM reads only track 1."""
+    final, spawned = _stop_ok_with_validation(monkeypatch, tmp_path, valid=True)
+    assert len(spawned) == 1
+    assert spawned[0][1:] == ["--mixdown", final]
+
+
+def test_stop_ok_needs_check_recording_skips_mixdown(monkeypatch, tmp_path):
+    """A recording that failed validation is left exactly as recorded."""
+    _, spawned = _stop_ok_with_validation(monkeypatch, tmp_path, valid=False)
+    assert spawned == []
+
+
 def test_suppress_auto_start_set_when_manual_stop_during_active_meeting():
     """Manual stop while Teams UDP is up → suppress_auto_start should be True.
     Verifies the logic contract (not full loop execution).
@@ -1587,6 +1672,51 @@ def test_attempt_planned_respawn_connect_fails_returns_none_no_status_write(monk
 
     assert result is None
     assert status_calls == []
+
+
+# ─── Phase 2C: start-timeout respawn (incident 2026-09-29) ───────
+
+def test_handle_start_timeout_notifies_once_and_respawns(monkeypatch):
+    """First START_TIMEOUT for a meeting: notify + respawn immediately
+    (no prior respawn recorded, so the cooldown never blocks it)."""
+    old_proc = MagicMock()
+    new_proc = MagicMock()
+    monkeypatch.setattr(v2, "connect_recorder", lambda: new_proc)
+    notify_calls = []
+    monkeypatch.setattr(v2, "notify", lambda t, m: notify_calls.append((t, m)))
+
+    result_proc, notified = v2._handle_start_timeout(old_proc, False)
+
+    assert result_proc is new_proc
+    assert notified is True
+    assert len(notify_calls) == 1
+
+
+def test_handle_start_timeout_already_notified_skips_duplicate_notify(monkeypatch):
+    """notified=True must not send a second notification on a retry — one
+    notification per meeting, not per retry."""
+    old_proc = MagicMock()
+    new_proc = MagicMock()
+    monkeypatch.setattr(v2, "connect_recorder", lambda: new_proc)
+    notify_calls = []
+    monkeypatch.setattr(v2, "notify", lambda t, m: notify_calls.append((t, m)))
+
+    _, notified = v2._handle_start_timeout(old_proc, True)
+
+    assert notified is True
+    assert notify_calls == []
+
+
+def test_handle_start_timeout_connect_fails_keeps_old_proc(monkeypatch):
+    """connect_recorder failing must fall back to the old (already-terminated)
+    proc rather than returning None — caller always has a proc to poll()."""
+    old_proc = MagicMock()
+    monkeypatch.setattr(v2, "connect_recorder", lambda: None)
+    monkeypatch.setattr(v2, "notify", lambda *a: None)
+
+    result_proc, _ = v2._handle_start_timeout(old_proc, True)
+
+    assert result_proc is old_proc
 
 
 # ════════════════════════════════════════════════════════════════════

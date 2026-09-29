@@ -777,6 +777,20 @@ def find_recorder_binary() -> str:
     return os.path.join(BASE_DIR, "recorder", "recorder")
 
 
+def spawn_mixdown(path: str):
+    """Merge the finished recording's tracks into one, in place, in the background.
+    NotebookLM reads only the first audio track, so the mic track was never
+    transcribed. The binary keeps the original if the mix does not validate.
+    """
+    # แยก process + ไม่รอ — main loop ต้องพร้อมจับ meeting ถัดไปทันที
+    try:
+        subprocess.Popen([find_recorder_binary(), "--mixdown", path],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        log(f"[WARN] รวม track ไม่ได้: {e} — ไฟล์ยังเป็น 2 track")
+
+
 def check_recorder_ready() -> bool:
     """ตรวจว่า binary มีอยู่และ arch ตรงกับเครื่อง
     On mismatch: แสดง 'Run: make build-recorder' แล้ว return False
@@ -821,6 +835,10 @@ DISK_WARN_MB       = 500  # warn ล่วงหน้าก่อนถึง�
 MAX_CRASH_RESTARTS = 3    # respawn binary ได้สูงสุดกี่ครั้งก่อน abort
 RESPAWN_EXIT_CODE  = 3    # exit code ที่ binary ใช้ตอน audio teardown ค้างหลัง
                           # ตอบ STOPPED_OK/STOPPED_ERROR ไปแล้ว — ไม่ใช่ crash จริง
+
+START_TIMEOUT = "START_TIMEOUT"  # sentinel: start_recording_v2 ได้แต่ไม่มี STARTED/ERROR
+                                  # เลย (process ค้างหรือ broken pipe) — ต่างจาก None
+                                  # (explicit ERROR token เช่น already_recording/permission)
 
 def check_disk_space(recording_dir: str) -> bool:
     """ตรวจ disk space ก่อนเริ่ม recording
@@ -954,7 +972,8 @@ def start_recording_v2(proc: "subprocess.Popen",
         proc.stdin.flush()
     except BrokenPipeError:
         log("[ERROR] recorder binary ไม่ตอบสนอง (broken pipe)")
-        return None
+        _terminate_recorder_proc(proc)
+        return START_TIMEOUT
 
     # ─── รอ STARTED (timeout 10s) ────────────────────────────
     response = _readline_timeout(proc.stdout, 10.0)
@@ -963,6 +982,16 @@ def start_recording_v2(proc: "subprocess.Popen",
         err_lines = _readlines_timeout(proc.stderr, 1.0)
         err = " | ".join(err_lines)
         log(f"[ERROR] recorder ไม่ตอบ STARTED — stdout={response!r} stderr={err!r}")
+        has_error_token = any(ln.strip().startswith("ERROR:") for ln in err_lines)
+        if response == "" and not has_error_token:
+            # ไม่มี STARTED และไม่มี ERROR token เลย — process ค้างจริง (เช่น
+            # AVAudioEngine hang ตอนสลับ Bluetooth headset, incident 2026-09-29)
+            # ต่างจาก already_recording/permission ที่ตอบ ERROR token ชัดเจน
+            log("[ERROR] recorder ไม่ตอบ STARTED ภายใน timeout — process ไม่ตอบสนอง (need respawn)")
+            write_status("error",
+                         last_error="recording failed to start (recorder not responding)")
+            _terminate_recorder_proc(proc)
+            return START_TIMEOUT
         if any("screen_recording_permission_denied" in ln for ln in err_lines):
             log("━" * 52)
             log("❌  ต้องเปิดสิทธิ์ Screen Recording ก่อนใช้งาน")
@@ -1059,6 +1088,7 @@ def stop_recording_v2(proc: "subprocess.Popen",
             else:
                 notify("Team Recorder",
                        f"✅ บันทึกแล้ว: {os.path.basename(final_path)}")
+                spawn_mixdown(final_path)
         write_status(
             "waiting",
             last_recording_path=final_path,
@@ -1462,6 +1492,23 @@ def _attempt_planned_respawn() -> "subprocess.Popen | None":
     return new_proc
 
 
+# ─── Phase 2C: start-timeout respawn (recorder hangs inside `start`) ──
+
+def _handle_start_timeout(proc: "subprocess.Popen", notified: bool) -> "tuple[subprocess.Popen, bool]":
+    """start_recording_v2 returned START_TIMEOUT — proc ถูก terminate ไปแล้ว
+    Notify ครั้งแรกของ meeting นี้เท่านั้น (caller เก็บ flag) แล้ว respawn ทันที —
+    ห้ามคืน proc ที่ตายแล้ว ไม่งั้น loop รอบถัดไปจะนับเป็น crash
+    (retry ถี่สุด ~ทุก 13s อยู่แล้วจาก STARTED timeout 10s + poll)
+    Returns: (proc ตัวถัดไปให้ caller ใช้, notified flag ใหม่)
+    """
+    if not notified:
+        notify("Team Recorder", "⚠️ เริ่มอัดไม่ได้ — กำลังลองใหม่")
+        notified = True
+    log("[INFO] recorder ไม่ตอบสนอง — respawn process ใหม่")
+    new_proc = connect_recorder()
+    return (new_proc if new_proc else proc), notified
+
+
 # ─── Phase 2A: crash auto-restart ────────────────────────────
 
 def _attempt_crash_restart(
@@ -1603,6 +1650,7 @@ def main():
     suppress_auto_start    = False # True ขณะ Teams UDP ยังสูงหลัง manual stop
     suppress_auto_start_at = 0.0  # timestamp when suppressed — for 30s expiry
     crash_restart_count  = 0     # รีเซ็ตหลัง meeting จบปกติ — ป้องกัน crash loop
+    start_timeout_notified = False  # กัน notify ซ้ำทุก retry — แจ้งครั้งเดียวต่อ meeting
 
     # ─── TTY setup — define restore_tty BEFORE signal handlers ──
     IS_TTY  = sys.stdin.isatty()
@@ -1684,6 +1732,7 @@ def main():
             # Also expire after 30s so leave+rejoin within the poll window still auto-starts
             if not active and not in_meeting:
                 suppress_auto_start = False
+                start_timeout_notified = False
             elif suppress_auto_start and (time.time() - suppress_auto_start_at) > 30:
                 suppress_auto_start = False
                 log("[INFO] suppress_auto_start expired — พร้อม auto-start อีกครั้ง")
@@ -1692,11 +1741,15 @@ def main():
                 # Meeting เพิ่งเริ่ม (auto-detect)
                 log("📢 ตรวจพบ Teams meeting!")
                 new_session = start_recording_v2(proc, RECORDING_DIR)
-                if new_session:
-                    in_meeting           = True
-                    session              = new_session
-                    recording_started_by = "auto"
-                    end_pending_at       = 0.0
+                if new_session is START_TIMEOUT:
+                    proc, start_timeout_notified = _handle_start_timeout(
+                        proc, start_timeout_notified)
+                elif new_session:
+                    in_meeting             = True
+                    session                = new_session
+                    recording_started_by   = "auto"
+                    end_pending_at         = 0.0
+                    start_timeout_notified = False
                 else:
                     log("[WARN] ยังไม่เริ่ม recording session — จะลองใหม่รอบถัดไป")
 
@@ -1779,12 +1832,16 @@ def main():
                               or ch_str.startswith("ๆ"))
                     if _START:
                         new_session, _ = _do_manual_start(proc, session, RECORDING_DIR)
-                        if new_session and new_session is not session:
-                            session              = new_session
-                            in_meeting           = True
-                            recording_started_by = "manual"
-                            suppress_auto_start  = False
-                            end_pending_at       = 0.0
+                        if new_session is START_TIMEOUT:
+                            proc, start_timeout_notified = _handle_start_timeout(
+                                proc, start_timeout_notified)
+                        elif new_session and new_session is not session:
+                            session                = new_session
+                            in_meeting             = True
+                            recording_started_by   = "manual"
+                            suppress_auto_start    = False
+                            end_pending_at         = 0.0
+                            start_timeout_notified = False
                     elif _STOP:
                         suppress = _do_manual_stop(proc, session, active)
                         if session is not None:  # helper only stops when session exists
@@ -1805,12 +1862,16 @@ def main():
             if _sig_start_requested:
                 _sig_start_requested = False
                 new_session, _ = _do_manual_start(proc, session, RECORDING_DIR)
-                if new_session and new_session is not session:
-                    session              = new_session
-                    in_meeting           = True
-                    recording_started_by = "manual"
-                    suppress_auto_start  = False
-                    end_pending_at       = 0.0
+                if new_session is START_TIMEOUT:
+                    proc, start_timeout_notified = _handle_start_timeout(
+                        proc, start_timeout_notified)
+                elif new_session and new_session is not session:
+                    session                = new_session
+                    in_meeting             = True
+                    recording_started_by   = "manual"
+                    suppress_auto_start    = False
+                    end_pending_at         = 0.0
+                    start_timeout_notified = False
             if _sig_stop_requested:
                 _sig_stop_requested = False
                 suppress = _do_manual_stop(proc, session, active)
