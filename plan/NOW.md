@@ -38,7 +38,7 @@ Tests: 136 passed, 3 skipped. Tests show files playable; natural BT collision no
 - [x] Killed recorder leaves corrupt file — fixed with fragment intervals (playable)
 - [x] NotebookLM missing user voice — fixed with `--mixdown` post-record
 - [ ] Natural BT HFP⇄A2DP collision during recording still unobserved: 3 real Meet-now runs, including 1 switch 6s after stop (process stayed healthy). Confidence rests on the design, the 350s no-mic kill test, and the healthy-path tests.
-- [ ] **v1.2.5 — PoC B: mic via ScreenCaptureKit `captureMicrophone` (macOS 15+, out-of-process in replayd), so a stuck BT switch can't cost the user's own voice.** Source is in `plan/poc-sck-mic/` (`main.swift`, `run.py`, `entitlements.plist`); it is untested.
+- [ ] **v1.2.5 — PoC B: mic via ScreenCaptureKit `captureMicrophone` (macOS 15+, out-of-process in replayd), so a stuck BT switch can't cost the user's own voice.** Source is in `plan/poc-sck-mic/` (`main.swift`, `run.py`; sign with `recorder/entitlements.plist`, since `*.plist` is gitignored); it is untested.
   - Build with `swiftc -O main.swift -o recorder-poc`, then codesign with the entitlements. SPM needs tools-version ≥ 6.0 for `.macOS(.v15)`.
   - A run from Claude's Bash hit a Screen Recording TCC error that the production binary did not hit. Run it from the user's Terminal instead so the prompt can appear.
   - Test: stop the watcher, set system input = MacBook mic and Teams mic = BT headset, run `python3 run.py`, then join and leave Meet now, and check the `MIC_GAP`/`STAT` lines.
