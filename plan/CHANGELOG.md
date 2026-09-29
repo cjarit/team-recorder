@@ -1,5 +1,22 @@
 # Changelog — Team Recorder
 
+## v1.2.4 — 2026-09-29
+
+### Resilient to Bluetooth hangs; single-track output for NotebookLM
+
+- **Mic startup is now async** — all AVAudioEngine work runs on dedicated serial `micQ` queue; `start` emits STARTED immediately without waiting for mic (fixes 2026-09-29: 59-min block on `startMic` during Bluetooth HFP⇄A2DP mode switch)
+- **Playable file on binary kill** — finalize AVAssetWriter before tearing down mic/SCK; if binary dies before cleanup, file is already a valid m4a with moov box (fixes 2026-09-28: unplayable file after stop timeout)
+- **Mic teardown timeout→respawn** — `stop` waits max 5s for `micQ` cleanup, exits code 3 (planned respawn, not crash) if timeout; Python immediately re-spawns without backoff; status fields survive across respawns
+- **Fragment interval = 10s** — `movieFragmentInterval` ensures partial kill leaves playable file up to last fragment
+- **Silence-fill mic track** — when no mic data arrives, fill from system-audio clock (prevents AVAssetWriter fragment stalls after ~220s with missing track); max 1.0s lag between tracks
+- **Post-record track merge** — `recorder --mixdown` called after each validated stop; merges system-audio + mic into single mono track (NotebookLM reads only first track; pre-v1.2.4 recordings missing user voice in transcripts); original kept if validation fails
+- **Removed `cancelWriting()` on timeout** — confirmed it deletes the output file; now unnecessary since finalize happens before teardown
+- **Start timeout→immediate respawn** — no ERROR stderr + no STARTED stdout within timeout = dead process; kill and respawn immediately, record as "error" status (one notification per meeting, deduped)
+- Tests: 136 passed, 3 skipped (23 new tests covering hang recovery, mixdown, fragment/silence fill)
+- Known issue: Bluetooth HFP⇄A2DP collision during recording not yet naturally reproduced (3 meet-now runs clean; 1 switch 6s post-stop = healthy). Confidence rests on design + 350s kill test (playable). PoC B (SCK captureMicrophone, macOS 15+, out-of-process) built unseen — deferred pending demand
+
+---
+
 ## v1.1.1 — 2026-07-06
 
 ### Bug fix: Teams auto-detection stopped working after a Teams app update

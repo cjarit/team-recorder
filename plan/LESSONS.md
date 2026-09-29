@@ -24,3 +24,50 @@ Post-release lessons captured here.
 - **Universal binary** (`lipo -create arm64 x86_64 -output recorder`) would eliminate the arch-specific release problem. Requires building on both arch machines or using a cross-compilation CI setup.
 - **Notarization** — as the app gains more external users, the right-click bypass friction will increase. Apple Developer Program ($99/yr) + `xcrun notarytool` is the path. Gatekeeper policy tightens with each macOS version.
 - **Auto-update** — no mechanism exists. Users must re-download from Releases. Sparkle framework is the standard macOS approach if this becomes a priority.
+
+---
+
+## v1.2.4 — 2026-09-29 (stop/start hang on Bluetooth switch)
+
+Each item: principle / case / trigger / action / scope.
+
+1. **A PoC gate must include the failure condition itself, not just the happy path.**
+   - Case: fragmented writing (`movieFragmentInterval`) passed a kill -9 test with a healthy mic. In production the mic was dead, and AVAssetWriter stopped fragmenting after ~220s (seen in the atom list of `rec_14-00_29-09-2026.m4a`: 21 moof, then one 23 MB mdat).
+   - Trigger: a fix is meant to protect against condition X, and the gate test doesn't create X.
+   - Action: write the gate as "reproduce X, then check the output", and run it past any known thresholds (here: 6 min > 220s, verified by decoding the full length, not ffprobe's header).
+   - Scope: any agent work.
+
+2. **Validate a recovery or repair tool on a known answer before handing its output over.**
+   - Case: untrunc's "(recovered)" 09-28 file passed ffprobe and decoded with 0 errors, but it had assigned packets between the 2 tracks by strict alternation, while the writer uses runs of about 8 packets. The result was chopped speech, which the user found through NotebookLM.
+   - Trigger: a tool reconstructs structure (tracks, indexes, tables) and we only checked the structure is valid.
+   - Action: run the tool on a healthy sample with the answer stripped, and compare against the truth (here: per-packet `stream_index`) before delivering.
+   - Scope: any agent work.
+
+3. **An AI critique of an artifact is a list of claims, and each one gets checked separately.**
+   - Case: NotebookLM's audio report mixed a real defect (chopped audio from the recovery) with false positives: VAD (we have none), fillers, cross-talk. Checking each claim also surfaced that NotebookLM reads only track 1.
+   - Trigger: a pasted AI review or QA list.
+   - Action: for each item, name the measurement that settles it (volumedetect, silencedetect, packet runs) and classify it as real, false positive or open.
+   - Scope: any agent work.
+
+4. **When the root cause is a class, fix every call site of the class in the same round.**
+   - Case: round 1 bounded the AVAudioEngine call on the **stop** path. The next day the same class (an AVAudioEngine call on the control thread during a BT HFP switch) blocked **start** for 59 min, and a meeting was lost.
+   - Trigger: the root cause is worded as "X can block/fail", and X is called from more than one place.
+   - Action: grep every call of X, and fix or bound them all (here: all of them onto `micQ`, and `start`/`stop` never wait unbounded).
+   - Scope: any agent work.
+
+5. **Derive the test setup from the incident log, not from intuition.**
+   - Case: I told the user to set the BT headset as the system input. That pre-engages HFP, so no switch happened in 2 test runs. The incident log showed the real setup: system input = MacBook mic, with Teams picking the headset.
+   - Trigger: asking the user to reproduce a field incident.
+   - Action: read the device and route state from the incident's system log first, and copy that state into the test steps.
+   - Scope: this project, and any hardware-dependent repro.
+
+6. **Review a subagent's diff against the surrounding control flow, not only against its own tests.**
+   - Case: the start-timeout rate-limit returned a killed process. On the next loop, the main loop's `proc.poll()` check would have counted that as a crash. The subagent's unit tests passed.
+   - Trigger: a subagent changes code called from a loop or state machine.
+   - Action: trace one iteration of the caller with the new return values before accepting.
+   - Scope: any agent work.
+
+**Strengths (keep doing):**
+- Sampling the live stuck process (`sample <pid>`) plus the thread's silence in `log show` turned a hypothesis into proof.
+- A 20-line experiment proved that `cancelWriting()` deletes the output file, before we relied on it.
+- Asking the user one decisive question with a crafted test file (a 2-track NotebookLM test) settled a product question in 5 minutes.

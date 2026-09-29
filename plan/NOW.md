@@ -2,55 +2,56 @@
 
 ## Current focus
 
-**v1.2.3 — Meeting name from window title; pre-join root cause fixed.**
-Calendar can no longer supply meeting titles for this user's org (Exchange
-sync blocked; calendar-publish locked to free/busy-only by tenant policy —
-see `plan/DECISIONS.md`, 2026-09-01). Fallback: read the meeting name off
-the Teams window when calendar has no match.
+**v1.2.4 — Resilient to Bluetooth hangs; single-track output for NotebookLM.**
+Two critical incidents identified and fixed:
+- (2026-09-28 14:52) Stop hung indefinitely → Python killed binary after 30s → file had no moov, marked INCOMPLETE_, meeting name lost. Recovered with untrunc but audio was chopped (tracks misaligned).
+- (2026-09-29 14:00) StartMic blocked for 59 minutes during BT HFP⇄A2DP switch → STARTED never arrived → meeting lost.
 
-Three releases (v1.2.0–v1.2.2) shipped fixes reasoned from plausibility
-rather than evidence, and all were wrong about the cause. A
-`--diagnose-title` mode was added and settled it in one 30-second capture:
-**recording starts while the user is still on Teams' pre-join / green-room
-screen**, which already opens call-media UDP sockets. No call, no toolbar,
-no timer — but the meeting name is right there in the window title.
+Root cause: AVAudioEngine calls (installTap/start/removeTap/stop) can block for hours during Bluetooth headset mode switching, which Teams triggers exactly at meeting join/leave.
 
-The same capture proved **OCR cannot read Thai reliably** (`ครับ` → `Ašu`,
-then `nu` on the next sample), while `SCWindow.title` carried it exactly.
-So the name now comes from the window title and OCR only reads the call
-timer (digits — language-independent). Python re-asks every ~15s for the
-whole meeting, so pre-join → in-call resolves on its own.
+Fixes (v1.2.4):
+- All AVAudioEngine work on dedicated `micQ` serial queue; `start` emits STARTED without waiting.
+- `stop` finalizes writer first (playable file), waits max 5s for mic teardown, exits code 3 on timeout (planned respawn).
+- `movieFragmentInterval=10s`: killed recorder still leaves playable file up to last fragment.
+- Silence-fill mic track from system-audio clock to prevent fragment stalls after ~220s with no mic.
+- New `recorder --mixdown`: NotebookLM reads only first track, so pre-v1.2.4 recordings were missing user's voice in transcripts.
+- Status fields survive respawns; Python immediately re-spawns on start timeout.
 
-Full evidence and reasoning in `plan/DECISIONS.md`.
+Tests: 136 passed, 3 skipped. Tests show files playable; natural BT collision not yet reproduced on demand (3 real meet-now runs no hang, one switch 6s after stop = healthy).
 
-## Phase status
+## Phase status (v1.2.4)
 
 | Phase | Status | Description |
 |---|---|---|
-| 0 — PoC | ✅ Done | Validated SCK window capture + Vision OCR; confirmed occlusion-safe window-targeted capture |
-| 1 — Swift title capture | ✅ Done | `meetingNameFromWindowTitle()` / `isPreJoinWindow()` / `captureMeetingTitleOnce()` ranked selection; `captureMeetingTitle(attempts:)` shared by the `title` stdin command and the `--meeting-title` CLI; `--diagnose-title` added |
-| 2 — Python wiring | ✅ Done | `get_meeting_title_from_screen(proc)` over stdin; retry every `TITLE_RETRY_EVERY` (~15s) across the whole meeting; `CAL_FROM_OCR`/`CAL_OCR_FAILED`; `make doctor` skip-check |
-| 3 — Manual rename UI (menu bar) | ⏸ Deferred to v1.3.0 | Ship the naming fix alone first; see `plan/DECISIONS.md` |
-| 4 — Docs revision | ✅ Done | CLAUDE.md / README / docs/user/ / project-context/ / plan/ updated for the window-title architecture |
-| 5 — QA | ✅ Done | 118 passed, 3 skipped; `/code-review` findings fixed; concurrency test confirms no SCStream interruption; live end-to-end on a real Thai-named meeting returns the exact title twice with clean stderr |
-| 6 — Release | 🔄 In progress | v1.2.0 + v1.2.2 published (both still mis-name recordings that start on pre-join). v1.2.1 never published. v1.2.3 pending publish |
+| 0 — Root cause analysis | ✅ Done | AVAudioEngine blocking on BT HFP⇄A2DP during meeting join/leave identified via incident post-mortems (2026-09-28/29) |
+| 1 — Playable files under kill | ✅ Done | `movieFragmentInterval=10s`; finalizer-first stop order; no `cancelWriting()` |
+| 2 — Mic async + timeout | ✅ Done | All AVAudioEngine on `micQ` serial queue; `start` non-blocking (STARTED immediate); `stop` waits max 5s then exits 3 |
+| 3 — Silence fill | ✅ Done | Mic track filled from system-audio clock (kMicMaxLag=1s, chunk ≤10s) prevents fragment stalls after ~220s |
+| 4 — Track merge | ✅ Done | `recorder --mixdown` post-recording (NotebookLM single-track read); original kept if validation fails |
+| 5 — Python respawn path | ✅ Done | Start timeout (no ERROR token) → terminate + respawn immediately; status "error" + one notification per meeting |
+| 6 — Docs + tests | ✅ Done | CLAUDE.md stdin/CLI/constants/Known Issues updated; 136 passed, 3 skipped |
+| 7 — Release | ⏳ Pending | v1.2.4 committed on branch, awaiting final install + user go to publish |
 
-## Open items
+## Open items (v1.2.4+)
 
-- [x] OCR returns nothing when not in a call — confirmed (`no_teams_windows_found`, exit 1)
-- [x] Capture doesn't disturb an active recording — confirmed broken via subprocess-spawn, fixed in-process, re-verified clean
-- [x] Thai meeting-title accuracy — **OCR fails** (`ครับ` → `Ašu`/`nu`); fixed by sourcing the name from `SCWindow.title`, verified exact end-to-end
-- [x] Root cause of "still named Teams Meeting" — pre-join screen, confirmed by `--diagnose-title`
+- [x] Mic blocking forever on BT switch — fixed with async `micQ` + 5s timeout (exit 3)
+- [x] Killed recorder leaves corrupt file — fixed with fragment intervals (playable)
+- [x] NotebookLM missing user voice — fixed with `--mixdown` post-record
+- [ ] Natural BT HFP⇄A2DP collision during recording still unobserved: 3 real Meet-now runs, including 1 switch 6s after stop (process stayed healthy). Confidence rests on the design, the 350s no-mic kill test, and the healthy-path tests.
+- [ ] **v1.2.5 — PoC B: mic via ScreenCaptureKit `captureMicrophone` (macOS 15+, out-of-process in replayd), so a stuck BT switch can't cost the user's own voice.** Source is in `plan/poc-sck-mic/` (`main.swift`, `run.py`, `entitlements.plist`); it is untested.
+  - Build with `swiftc -O main.swift -o recorder-poc`, then codesign with the entitlements. SPM needs tools-version ≥ 6.0 for `.macOS(.v15)`.
+  - A run from Claude's Bash hit a Screen Recording TCC error that the production binary did not hit. Run it from the user's Terminal instead so the prompt can appear.
+  - Test: stop the watcher, set system input = MacBook mic and Teams mic = BT headset, run `python3 run.py`, then join and leave Meet now, and check the `MIC_GAP`/`STAT` lines.
+  - Decision needed: keep AVAudioEngine as the macOS 14 fallback? Does anyone on the team still run 14?
 - [ ] Thai-language Teams **UI** (menu/section names in Thai) — window-title parsing strips only `" | Microsoft Teams"` / `"Meeting join | "`, which are likely localized too; unverified, would need a Thai-UI Teams client
-- [ ] The user reported some failures while genuinely in-call — never reproduced; the ~15s retry loop should cover it regardless of cause, but watch for recurrence
-- [ ] Upgrade test: does replacing the installed `.app` re-trigger TCC prompts? Still unverified — document the real result in `docs/user/troubleshooting.md`
-- [ ] Gatekeeper screenshot (carried over from v1.0) — `docs/user/images/gatekeeper-bypass.png`
+- [x] Upgrade test: does replacing the installed `.app` re-trigger TCC prompts? Observed 2× on 2026-09-28/29: after `make menu-bar-install` the ad-hoc signature changes, `setupCompleted` reads 0 and the watcher does not start until Setup Guide is completed again. Document this in `docs/user/troubleshooting.md` for public upgrades.
 
-## Blocking decisions made
+## Blocking decisions made (v1.2.4)
 
-- **Meeting NAME comes from `SCWindow.title`, never OCR** — OCR mangles Thai, differently each sample (proven). OCR's only job is reading the call timer to identify the live-call window.
-- Recording commonly starts on Teams' **pre-join screen** (it opens UDP media sockets before "Join now") — a `"Meeting join | …"` window is an accepted name source, and Python keeps re-asking until the call proper is joined
-- OCR during an active recording MUST run in-process (the `title` stdin command) — a separate spawned `recorder --meeting-title` process is a different ScreenCaptureKit client and interrupts the recording's own SCStream (was a real shipped bug in v1.2.0)
-- Window capture uses `SCContentFilter(desktopIndependentWindow:)`, never coordinate-based `screencapture -R` — proven unsafe (captured an unrelated app's window when Teams moved)
-- Build the diagnostic before shipping the fix — three releases were spent on unverified hypotheses; `--diagnose-title` settled it in minutes
-- Phase 3 (manual rename UI) deferred to v1.3.0
+- **AVAudioEngine work on dedicated `micQ`, never awaited unbounded.** Teardown can block for hours on BT mode switch. `start` emits STARTED immediately, mic startup async. `stop` waits max 5s then respawns (exit 3), not fatal.
+- **Playable file first, cleanup second.** Writer finalized before mic/SCK teardown; file safe even if binary dies. On timeout, `movieFragmentInterval=10s` ensures up-to-the-last-fragment playability.
+- **No `cancelWriting()` on timeout.** Confirmed it deletes the output file entirely — was a false fix attempt.
+- **Mic track silence-filled from system-audio clock.** Without mic data, fragments stall after ~220s (AVAssetWriter implementation detail, unfixable from user side). Fill with silence (0 amplitude) on system clock to keep fragments flowing, max `kMicMaxLag=1.0s` lag.
+- **Post-record mixdown, not retroactive.** NotebookLM reads first track only; pre-v1.2.4 recordings never re-mixed by user choice (evidence trail, not limitation). `recorder --mixdown` available on demand.
+- **Start timeout (no ERROR stderr) triggers respawn.** Python immediately re-spawns, surfaces as "error" status + one notification. Not a crash; status fields (last_start, etc.) survive.
+- Existing naming/pre-join decisions (v1.2.3) unchanged.

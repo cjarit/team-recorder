@@ -9,6 +9,8 @@
 | No microphone audio | System Settings → Privacy & Security → Microphone → Team Recorder ✓ |
 | Recording continues after meeting ends | Expected — watcher waits 8s before confirming meeting ended (false-stop prevention) |
 | Red recording icon stays after Stop / app feels stuck | Click menu bar icon → Recover Recorder…; current file may be marked incomplete |
+| File named INCOMPLETE_ (v1.2.4+) | The recorder may have hung during shutdown. The file should still be playable up to the last 10-second fragment. If corrupted, contact support with the file path and timestamps from the menu bar icon. This is rare and improved from v1.2.3 — older INCOMPLETE_ files were often unplayable |
+| Using a Bluetooth headset (AirPods etc.): recording didn't start or a file came out INCOMPLETE (versions before 1.2.4) | When Teams starts or ends a call, the headset switches between call mode and music mode. Older versions could freeze at that moment. Version 1.2.4+ no longer waits for the mic, so the recording always starts and the file always opens. If the mic gets stuck mid-meeting, other people's voices are still recorded, but your own voice may be missing for that stretch. If you want to be sure your voice is recorded, use a wired mic or the MacBook mic |
 
 ## Menu bar app issues
 

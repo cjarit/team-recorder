@@ -22,7 +22,7 @@ macOS-only tool that watches for Microsoft Teams meetings and automatically reco
 ```
 Team Recorder/
 ├── teams_recorder_v2.py     Main runtime — do not refactor
-├── test_recorder_v2.py      Unit tests (118 pass, 3 skipped)
+├── test_recorder_v2.py      Unit tests (136 passed, 3 skipped)
 ├── recorder/
 │   ├── recorder             Compiled Swift binary — committed to repo
 │   ├── main.swift           Swift source (Sources/recorder/main.swift)
@@ -112,6 +112,7 @@ errors                                          stderr → "ERROR: <token>\n"
 **STOPPED_OK is the sync point** — Python only renames the file after receiving STOPPED_OK.
 On STOPPED_ERROR, Python marks the file as INCOMPLETE_ instead of renaming it normally.
 Never rename before a stop response is confirmed.
+Exit code 3 after a completed stop (file already finalized) signals a planned respawn — not a crash — for cases where mic/SCK teardown blocks indefinitely (e.g., Bluetooth headset HFP⇄A2DP switch during meeting join/leave); Python treats this as a recoverable hang, not a failure.
 
 **`title` MUST go through the stdin of the already-recording process, never a second spawned `recorder --meeting-title` process** — a second process is a different ScreenCaptureKit client and interrupts the first one's SCStream. Confirmed by testing (v1.2.2): the already-recording process logged `SCStream stopped: application connection being interrupted` the moment a second process ran `--meeting-title` concurrently, with a clean control run when it didn't. `get_meeting_title_from_screen(proc)` in `teams_recorder_v2.py` sends `"title\n"` to the same `proc` used for `start`/`stop` for exactly this reason. The command is synchronous like `start`/`stop` — Python must read the `TITLE`/`TITLE_NONE` response before sending anything else; the single-threaded stdin read loop enforces this anyway. `title` can block for a few seconds (internal retry, see `captureMeetingTitle()` below) — this delays the next command Python sends (e.g. `stop`), never the actual audio pipeline.
 
@@ -128,6 +129,8 @@ recorder --meeting-title       # standalone/manual testing ONLY (make doctor, ad
                                 # NEVER run this while another recorder process is recording,
                                 # see stdin/stdout protocol section above. Production path is
                                 # the "title" stdin command sent to the recording process itself.
+recorder --mixdown <file>     # merge dual-track recording into single mono AAC track in place
+                                # (NotebookLM reads only first track); original kept if validation fails
 ```
 
 ### Error tokens (stderr)
@@ -178,13 +181,14 @@ Key files:
 
 ~700 lines. Key sections:
 - `RecorderEngine` class — manages AVAssetWriter, SCK stream, AVAudioEngine
-- `start(path:)` — throws `RecorderError` on failure; never emits STARTED on error
+- `start(path:)` — throws `RecorderError` on failure; never emits STARTED on error. Emits STARTED immediately; mic startup (which can block for minutes on BT HFP⇄A2DP switch) runs async on `micQ`
 - `buildSCKStream()` — pure factory; fetches shareable content, configures stream, calls `startCapture`; no self-mutation; safe on any queue; used by both `startSCK()` and the restart path
 - `startSCK()` — thin wrapper: calls `buildSCKStream()` then assigns `sckStream` + calls `registerSCKWakeObserver()` (normal start path only)
 - `registerSCKWakeObserver()` — registers `NSWorkspace.didWakeNotification` on `.main`; defensively removes any existing observer first; must be called on the main queue
 - `handleSCKStreamStop(_:)` — called on main from `didStopWithError` and wake observer; captures+clears old stream on main; background queue stops old stream + calls `buildSCKStream()`; main-queue second gate (`isRecording && sckRestartPending`) before installing new stream — discards stream if recording ended during restart window
 - `sckRestartPending` — prevents concurrent restarts; reads/writes on main queue for the restart path; cleared in `stopSCK()`
-- **Threading note:** the restart path (`handleSCKStreamStop`) keeps all SCK state mutations on main. The normal start/stop path (`startSCK`, `stopSCK`) runs on the stdin protocol queue (background) — pre-existing behaviour, not introduced by Phase 2B.
+- **`micQ` serial queue rule (v1.2.4):** all AVAudioEngine calls (installTap, start, removeTap, stop, config-change restart) run on dedicated `micQ`; these can block indefinitely during BT HFP⇄A2DP switch at meeting join/leave. Never call AVAudioEngine off `micQ`, and never wait on `micQ` without a timeout. `start` dispatches `startMic` async; the mic track is silence-filled from the system-audio clock (`fillMicSilence`) until real mic buffers arrive. The `stop` path finalizes the writer first (ensuring playable file), waits max 5s for mic teardown on `micQ`, then exits with code 3 if timeout occurs (planned respawn, not crash).
+- **Threading note:** the restart path (`handleSCKStreamStop`) keeps all SCK state mutations on main. The normal start/stop path (`startSCK`, `stopSCK`) runs on the stdin protocol queue (background) — pre-existing behaviour, not introduced by Phase 2B. Mic async work runs only on `micQ`.
 - `startCapture` error captured and rethrown after `sema.wait()`
 - `emit(_:)` — uses `Darwin.write()` for unbuffered stdout (not `print()`)
 - **The meeting NAME comes from `SCWindow.title`, never from OCR.** OCR is used only to read the call **timer** (digits — language-independent, reads reliably). Proven on real meetings 2026-09-01: for a meeting named `Test for Team Record ครับ`, the window title was exactly `'Test for Team Record ครับ | Microsoft Teams'`, while OCR of the same toolbar returned `'Test for Team Record Ašu'` and then `'Test for Team Record nu'` — Thai mangled, and mangled *differently* on consecutive samples. This team names meetings in Thai as a matter of course, so OCR could never have supplied the name. Do not "simplify" this back to reading the title out of the OCR text.
@@ -224,14 +228,20 @@ future Teams update moves media sockets again, add another `pgrep -f` pattern to
 ### Swift audio constants (`recorder/Sources/recorder/main.swift`)
 
 ```swift
-kSampleRate = 16_000   // Hz — ASR-optimised (Whisper/NotebookLM sweet spot; was 48 000)
-kBitrate    = 32_000   // bps — ~14 MB/hr (32 kbps × 3600s ÷ 8; was 96 000 → ~43 MB/hr); bump to 48 000 if Thai ASR degrades
-kChannels   = 1        // mono — Teams audio is mono in practice
+kSampleRate                   = 16_000   // Hz — ASR-optimised (Whisper/NotebookLM sweet spot; was 48 000)
+kBitrate                      = 32_000   // bps — ~14 MB/hr (32 kbps × 3600s ÷ 8; was 96 000 → ~43 MB/hr); bump to 48 000 if Thai ASR degrades
+kChannels                     = 1        // mono — Teams audio is mono in practice
+kFragmentSeconds              = 10       // m4a movieFragmentInterval; a killed recorder leaves a playable file up to the last fragment
+kTeardownTimeoutSeconds       = 5        // max wait for AVAudioEngine teardown before exit 3 (planned respawn)
+kExitTeardownHung             = 3        // exit code for planned respawn (matched to RESPAWN_EXIT_CODE in Python)
+kMicMaxLag                    = 1.0      // seconds — silence-fill the mic track from the system-audio clock to prevent fragment stalls
 ```
 
 `kSampleRate` is used in three places: `aacOutputSettings()`, `targetMicFmt`, and `cfg.sampleRate` in `buildSCKStream()`. Changing it automatically adjusts both the mic resampling path and the SCK delivery rate — no other edits needed.
 
 If Thai transcription accuracy degrades at 32 kbps: change `kBitrate` to `48_000` and rebuild. 48 kbps is the widely-cited transparent-for-speech threshold for AAC-LC mono.
+
+`kFragmentSeconds` = 10 ensures that a killed recorder still leaves a playable file — every 10s, the writer emits a complete fragment. With no mic data, fragments can stall after ~220s; fixed by `kMicMaxLag` silence-filling from the system-audio clock.
 
 Calendar matching is **not** a tunable constant — `find_matching_meeting()` matches a
 recording to a calendar event by interval containment with a fixed ±5-minute slack.
@@ -293,7 +303,7 @@ Inline Thai comments are team knowledge from real testing sessions. They explain
 ## Test Coverage
 
 ```
-test_recorder_v2.py — 118 passed, 3 skipped
+test_recorder_v2.py — 136 passed, 3 skipped
 ```
 
 The 3 skipped tests are `@LIVE_SMOKE` — require a real binary and Screen Recording permission. Run with `RUN_LIVE_SMOKE=1 make test`.
@@ -306,6 +316,9 @@ Follow the existing mock pattern when adding tests. Use `monkeypatch` + `MagicMo
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
+| Recording didn't start, or stop hung (pre-v1.2.4) | AVAudioEngine blocks (up to ~1 h) while a Bluetooth headset switches HFP⇄A2DP — Teams grabs/releases the headset mic at call join/leave, exactly when recording starts/stops. 2026-09-28: stop hung → file unplayable. 2026-09-29: `startMic` blocked 59 min → meeting not recorded. To reproduce: system input = MacBook mic, Teams mic = BT headset (setting the headset as system input pre-engages HFP, so no switch happens) | v1.2.4: all mic work on `micQ`; STARTED never waits for the mic; stop finalizes the file first, waits ≤5s for mic teardown, else exit 3 (planned respawn). Python respawns the recorder on a STARTED timeout. Remaining gap: while the engine is blocked, the user's own voice is not captured (others' voices are) — PoC B (SCK mic, v1.2.5) targets this |
+| Recording file marked INCOMPLETE_ (not playable, pre-v1.2.4) | Recorder crashed/hung before finalizing the file — no moov box written, no frames playable | v1.2.4+: file stays playable via fragment intervals. Pre-v1.2.4: recover with `untrunc --mk-frag …` (lossy, ~1 track may be skipped); preferred: upgrade to v1.2.4 |
+| NotebookLM transcript missing user's own voice (pre-v1.2.4) | Dual-track recording (system audio + mic audio) but NotebookLM reads only the first track — user voice on second track never transcribed | v1.2.4+: `recorder --mixdown` merges tracks after each recording. Pre-v1.2.4 recordings were not re-mixed (user choice — apply mixdown manually if needed: `recorder --mixdown <file>` |
 | `[WARN] teams_recorder กำลังทำงานอยู่` on fresh start | `pgrep -f` matches the current process via Python argv | Expected — self-PID is filtered, other PIDs are real conflicts |
 | Recording named "Teams Meeting" | Terminal lacks Calendar permission | System Settings → Privacy & Security → Calendars → enable Terminal (or TeamRecorderBar) |
 | Binary SIGKILL on macOS 26 | `swift build` produces linker-signed ad-hoc (rejected) | `make build-recorder` re-signs with plain adhoc + entitlements |
@@ -339,3 +352,24 @@ codesign -s - --force --entitlements recorder/entitlements.plist recorder/record
 Entitlements required:
 - `com.apple.security.device.screen-capture`
 - `com.apple.security.device.microphone`
+
+---
+
+## Way of work learned (DO / DON'T)
+
+Full cases: `plan/LESSONS.md` → v1.2.4.
+
+### This project
+- DO read the incident's device/route state from `log show` before writing repro steps. For BT: system input = MacBook mic, Teams mic = headset.
+- DO `sample <pid>` a stuck recorder before killing it. Thread silence in `log show --predicate 'processID == N'` plus the stack is proof; a timeline alone is a hypothesis.
+- DO check any "file is recoverable/playable" claim by decoding the full length (`ffmpeg -f null`), not with ffprobe's header duration.
+- DON'T call AVAudioEngine off `micQ`, and don't wait on it unbounded (see Swift section).
+- Reinstalling the `.app` resets permissions: plan one install per test round, not one per fix.
+
+### General (propose moving to global CLAUDE.md at project end)
+- A PoC gate must create the failure condition itself, not only the happy path.
+- Validate repair/recovery tools on a known answer before handing their output to the user.
+- When the root cause is a class ("X can block"), fix every call site of X in the same round.
+- Treat an AI critique as a list of claims, and settle each with a measurement.
+- Review a subagent's diff by tracing one iteration of its caller, not only its own tests.
+

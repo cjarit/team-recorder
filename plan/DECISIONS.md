@@ -116,3 +116,74 @@ Thai is mangled, and mangled *differently* each sample. "Thai OCR accuracy — u
 - **Python drives retries across the whole meeting** (`TITLE_RETRY_EVERY`, ~15s), replacing the Swift-side retry burst. The `title` stdin command is now a single fast pass (`attempts: 1`). This is the correct altitude: the name is available for the entire meeting, so the loop should keep asking until it gets one — self-healing for pre-join → in-call, for a window minimized at start and restored later, and for any transient cause we have not identified. The user reported some failures where they *were* already in the call; that specific case was never reproduced, and rather than guess at it again, the retry design covers it regardless of cause.
 
 **Process lesson (the real one).** Three releases were spent fixing a symptom against invented causes. The diagnostic that settled it took ~20 minutes to write. Build the instrument before shipping the fix — when a hypothesis cannot be checked against observed data, it is a guess, and shipping guesses to users burned more time than measuring would have.
+
+---
+
+## 2026-09-29 — v1.2.4: Resilient to Bluetooth hangs; single-track output for NotebookLM
+
+### Root cause: AVAudioEngine blocking on Bluetooth HFP⇄A2DP mode switch
+
+Two incidents identified:
+1. **2026-09-28 14:52 — stop hung indefinitely.** Python killed binary after 30s timeout → file had no moov box, unplayable, marked INCOMPLETE_, meeting name lost. Recovered via `untrunc` but audio was corrupted (track-interleave error: strict 1-packet alternation vs the writer's ~8-packet runs). Re-separation reached 94.4% confidence vs required 99% → kept as evidence only.
+2. **2026-09-29 14:00 — startMic blocked for 59 minutes.** STARTED never arrived → meeting lost → status showed "Waiting" for an hour. Process remained alive, no crashes, blocked inside `installTap()` of AVAudioEngine.
+
+**Root cause identified:** `AVAudioEngine` calls (installTap, start, removeTap, stop) can block indefinitely. Investigation narrowed it to Bluetooth headset mode switching (HFP ⇄ A2DP), which Teams triggers exactly when:
+- Joining call — headset switches to HFP (call audio mode)
+- Leaving call — headset switches back to A2DP (music mode)
+
+Both events exactly align with `start` and `stop` which run AVAudioEngine setup/teardown. Test setup: System Settings mic = MacBook internal, Teams mic = Bluetooth headset (this pre-engages the mode, so no switch occurs). Real-world setup matches the collision: user picks best mic (external BT headset), Teams grabs it on join/leave → mode switch → AVAudioEngine blocks. **Confidence:** design rationale + 6-minute kill test (350s of recording still playable) + healthy production tests (1 switch occurred 6s post-stop = healthy). Natural collision during start/stop not reproduced on demand (3 meet-now runs, each with no hang).
+
+### Decisions
+
+#### 1. Async mic startup with immediate STARTED emit
+- **Decision:** Run all AVAudioEngine work on a dedicated serial `micQ` queue. Emit STARTED immediately after SCK init, without waiting for mic.
+- **Rationale:** If mic startup blocks (HFP switch, or any other cause), the main stop/start path is unblocked. Python receives STARTED synchronously and can confirm the recording has begun. The watcher doesn't hang.
+- **Trade-off:** Mic audio may arrive late (up to the block duration). Addressed by silence-fill (below).
+
+#### 2. Playable file first, cleanup second
+- **Decision:** Finalize AVAssetWriter before tearing down mic/SCK. If the binary is killed, dies, or hits timeout, the file is already a valid m4a with moov box.
+- **Rationale:** v1.2.4 round 1 showed that recordings crashed before finalize → unplayable file, name lost. Finalize-first ensures the file is playable even if cleanup hangs or fails.
+- **Implementation:** `stop()` order: (1) `finishWriting(withCompletionHandler:)` wait, (2) `stopSCK()` on stdin queue, (3) wait max 5s for `micQ` teardown, (4) exit if timeout.
+
+#### 3. Exit code 3 after completed stop = planned respawn, not crash
+- **Decision:** When `stop()` completes (file finalized) but `micQ` teardown times out after 5s, exit with code 3 instead of code 1 (error) or code 0 (success).
+- **Rationale:** Exit code 3 is a contract with Python: "the file is safe, but something hung." Python immediately re-spawns the recorder without retries or backoff — it's a self-healing respawn. The 5s timeout is > STOP_GRACE (8s) anyway, so if mic teardown is still running at 5s post-stop, the meeting is definitely over.
+- **Tuning:** Constant `kTeardownTimeoutSeconds = 5` is the limit; must match `RESPAWN_EXIT_CODE` in Python.
+- **Status fields survive:** `last_*` timestamps and meeting name (if known) are written to `status.json` before exiting, so the respawn session sees what was known.
+
+#### 4. Fragment interval = 10s for partial-kill resilience
+- **Decision:** Set `AVAssetWriter.movieFragmentInterval = 10` seconds.
+- **Rationale:** With fragment intervals, the writer emits a complete fragment every 10s. If the binary is killed at second 47, the file has fragments for seconds 0–40 (4 complete fragments) = playable. Without fragments, a killed writer leaves no moov box until `finishWriting` completes.
+- **Trade-off:** Fragment headers add ~1–2% file size overhead (negligible at 32 kbps).
+- **Limitation found:** With no mic data, AVAssetWriter stops fragmenting after ~220s (an implementation detail of the writer, not configurable). Addressed by silence-fill (below).
+
+#### 5. Mic track silence-fill from system-audio clock
+- **Decision:** When no mic data has arrived, fill the mic track with silence at `kMicMaxLag = 1.0` second intervals, from the system-audio (`SCStream`) delivery clock.
+- **Rationale:** The AVAssetWriter doesn't fragment unless it's receiving data on both tracks. If mic startup is blocked for minutes, the system-audio track writes frames normally but the mic track stays empty → writer stalls at fragment boundaries. Silence-fill keeps both tracks advancing on the same clock, so fragments keep flowing even if mic audio never arrives. If mic audio does arrive late, silence-fill backs off — the real audio fills the gap.
+- **Implementation details:**
+  - Fill trigger: check every CMTime sample if `lastMicPresentationTime` is stale (> kMicMaxLag behind system audio)
+  - Fill chunk: ≤ 10s of silence to avoid huge mallocs; fills just enough to advance to the next fragment boundary
+  - No amplitude: 0 (true silence); if mic audio arrives, it overwrites these samples naturally
+- **Testing:** 6-minute kill test (no mic: silent system audio, no mic track data) produces playable file with complete frames.
+
+#### 6. Removed `cancelWriting()` on finishWriting timeout
+- **Decision:** Do NOT call `cancelWriting()` if `finishWriting()` stalls. Exit cleanly instead.
+- **Rationale:** Confirmed via code inspection: `cancelWriting()` **deletes the entire output file**. In v1.2.4 round 1, this was attempted as a "safe fail" for timeout cases — it deleted the file outright, worse than an incomplete one. Now the file is finalized before timeout can occur anyway (see decision #2), so this was never needed.
+
+#### 7. Track mixdown post-record (single-track output)
+- **Decision:** After a validated `STOPPED_OK`, spawn `recorder --mixdown <file>` detached to merge system-audio + mic into a single mono track in place. Keep original if duration differs >1s.
+- **Rationale:** NotebookLM reads only the first audio track (verified via test file: 2-track file transcribed only track 1; mixed file transcribed both). Pre-v1.2.4 recordings had user's own voice missing from transcripts.
+- **Why not retroactive:** User choice — pre-v1.2.4 files are evidence of the dual-track behavior; keeping them unmodified preserves the record. Mixdown is available on-demand: `recorder --mixdown <file>`.
+- **Validation:** Compare duration of input file vs mixed output. If > 1s difference, something went wrong (track length mismatch, codec change, etc.) — keep original, log warning. This is conservative: almost all differences are clock rounding or sample-rate resampling edge cases (<100ms).
+- **Mixing parameters:** AVAssetReaderAudioMixOutput, 0.8 gain per track (avoids clipping from 2×1.0 amplitude).
+
+#### 8. Start timeout (no ERROR stderr) → immediate respawn
+- **Decision:** If `start` returns success (file opened, SCK running) but no stdout received within timeout, kill the process and immediately re-spawn. Record as "error" status with one notification per meeting (dedup by last_meeting_name + timestamp).
+- **Rationale:** Start timeouts are rare (need both stderr silent + stdout missing) but indicate a process in a dead state. Immediate respawn recovers the meeting if it ever actually started. Dedup prevents spam if the second spawn also hangs.
+- **Tuning:** START_TIMEOUT in Python; STARTED_TIMEOUT_SECS determines when to kill.
+
+### What was NOT changed (lessons from prior releases)
+
+**PoC B (SCK captureMicrophone) deferred:** Macros 15+ has `SCStream.captureOption(.captureMicrophone)` — in-stream mic capture avoids the entire AVAudioEngine path and its HFP switch blocking. Built as a proof-of-concept in scratch but untested. Confidence in design is high, but the collision itself was never naturally reproduced (only via incident forensics + 350s kill test), so the real-world demand for PoC B is unknown. Deferred pending field feedback or a natural reproduction.
+
+**Process lesson repeats:** The 59-minute block (2026-09-29 14:00) was only discovered because the user reported it. No monitoring, no alerting — it lived in production silently until someone checked the menu bar after an hour. Confidence in v1.2.4 is high by design, but measure the real world too.

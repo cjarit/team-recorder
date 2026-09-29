@@ -85,6 +85,14 @@ If you re-listen to the recording and the audio sounds compressed, that is expec
 
 ---
 
+**Why is the recording now single-track instead of dual-track?**
+
+As of v1.2.4, recordings are automatically merged into a single mono audio track after each meeting. This is because NotebookLM and other AI transcription tools read only the first audio track — if you were using an older version, your recordings had both system audio and your microphone on separate tracks, but only the meeting speakers' voices were transcribed, not yours.
+
+The merge happens automatically after you stop recording. If a recording fails to merge (rare), the original dual-track file is kept as a backup. You can also manually re-merge any older recording by opening Terminal and running: `recorder --mixdown <path/to/file.m4a>` (replace the path with your actual recording file).
+
+---
+
 **Can I use this on macOS 13 Ventura or earlier?**
 
 No. Team Recorder requires macOS 14 (Sonoma) or later. This is a hard requirement — the app uses Calendar APIs (EKEventStore full access) that are only stable on macOS 14+.
