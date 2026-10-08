@@ -782,6 +782,10 @@ def spawn_mixdown(path: str):
     NotebookLM reads only the first audio track, so the mic track was never
     transcribed. The binary keeps the original if the mix does not validate.
     """
+    # SKIP_MIXDOWN=1 ใน .env = เก็บไฟล์ไว้ 2 track สำหรับวัด (scripts/xcorr.py) — ใช้ตอน debug เท่านั้น
+    if os.getenv("SKIP_MIXDOWN", "").strip() == "1":
+        log("[INFO] SKIP_MIXDOWN=1 — เก็บไฟล์ไว้ 2 track")
+        return
     # แยก process + ไม่รอ — main loop ต้องพร้อมจับ meeting ถัดไปทันที
     try:
         subprocess.Popen([find_recorder_binary(), "--mixdown", path],

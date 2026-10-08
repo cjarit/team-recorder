@@ -2,8 +2,8 @@
 """Measure speaker bleed in a dual-track recording.
 
 Cross-correlates the system-audio track (0) against the mic track (1) in 10 s
-windows and reports the best lag (mic lagging system, 0–400 ms) and the
-normalized correlation. Windows with near-silent system audio are skipped.
+windows and reports the best lag (±2 s; negative = mic earlier than system) and
+the normalized correlation, per window, so a drifting offset shows as a trend. Windows with near-silent system audio are skipped.
 
 usage: scripts/xcorr.py <file.m4a> [--start 600] [--dur 180]
 Needs ffmpeg/ffprobe on PATH and numpy.
@@ -15,7 +15,7 @@ import sys
 import numpy as np
 
 SR = 16000
-MAX_LAG_S = 0.4
+MAX_LAG_S = 2.0
 WIN_S = 10
 SILENCE_RMS = 0.005
 BLEED_CORR = 0.3
@@ -39,19 +39,19 @@ def measure(sysa, mic):
     sysa, mic = sysa[:n], mic[:n]
     maxlag, win = int(MAX_LAG_S * SR), WIN_S * SR
     peaks = []
-    for s in range(0, n - win - maxlag, win):
+    for s in range(maxlag, n - win - maxlag, win):
         a = sysa[s:s + win]
         a = a - a.mean()
         if np.sqrt(np.mean(a ** 2)) < SILENCE_RMS:
             continue
-        best = (0, -1.0)
-        for lag in range(0, maxlag, 8):
-            b = mic[s + lag:s + lag + win]
-            b = b - b.mean()
-            c = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
-            if c > best[1]:
-                best = (lag, c)
-        peaks.append(best)
+        b = mic[s - maxlag:s + win + maxlag]
+        b = b - b.mean()
+        fa = np.fft.rfft(a, len(b) + win)
+        fb = np.fft.rfft(b, len(b) + win)
+        cc = np.fft.irfft(fb * np.conj(fa))[:2 * maxlag + 1]
+        norm = np.linalg.norm(a) * np.linalg.norm(b) + 1e-9
+        k = int(np.argmax(cc))
+        peaks.append((k - maxlag, float(cc[k] / norm), s / SR))
     return peaks
 
 
@@ -75,6 +75,9 @@ def main():
     print(f"windows={len(peaks)} corr median={np.median(cs):.3f} max={cs.max():.3f} "
           f"lag@max={lags[cs.argmax()]:.0f}ms lag median={np.median(lags):.0f}ms "
           f"windows corr>{BLEED_CORR}: {(cs > BLEED_CORR).sum()}")
+    print("per window (t → lag ms, corr; lag<0 = mic earlier than system):")
+    for lag, c, t in peaks:
+        print(f"  {t:6.0f}s  {lag / SR * 1000:7.0f}ms  {c:.3f}")
     print("verdict:", "BLEED" if np.median(cs) > BLEED_CORR else "no bleed")
     return 0
 

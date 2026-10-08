@@ -39,6 +39,9 @@ private let kTeardownTimeoutSeconds: Double = 5
 private let kExitTeardownHung: Int32 = 3
 // ไมค์ตามหลังเสียงระบบเกินนี้ (วินาที) → เติมความเงียบให้ track ไมค์
 private let kMicMaxLag: Double = 1
+// ตำแหน่งใน track มาจาก timestamp ของ buffer (host clock) ไม่ใช่การนับ sample — SCK ส่ง 16 kHz มาขาดไป ~1%
+// (ไฟล์ 28-09: track ระบบ 2028s, ไมค์ 2051s, นาฬิกาจริง 2051s) ทำให้เสียงคนอื่นวิ่งนำไมค์สะสม = "echo"
+private let kAlignTolerance = Int64(0.1 * kSampleRate)
 // gain ต่อ track ตอนรวมเป็น track เดียว (--mixdown)
 private let kMixdownTrackGain: Double = 0.8
 // levels.json — ระดับเสียงสดให้ menu bar app แสดง meter (ต้องตรงกับ APP_SUPPORT_DIR ใน teams_recorder_v2.py)
@@ -330,9 +333,10 @@ final class RecorderEngine {
     private let writeQ = DispatchQueue(label: "io.teams-recorder.write",
                                        qos: .userInteractive)
 
-    // Sample counters → PTS (sample counting เลี่ยง host-clock drift)
+    // ตำแหน่งปัจจุบันของแต่ละ track (sample ที่ kSampleRate) — เลื่อนตาม timestamp ของ buffer เทียบ clockStart
     private var sysSamples: Int64 = 0
     private var micSamples: Int64 = 0
+    private var clockStart: CMTime?
 
     // Live levels (levels.json) — accumulators touched on writeQ only; file written on levelsQ
     private let levelsQ = DispatchQueue(label: "io.teams-recorder.levels", qos: .utility)
@@ -344,6 +348,7 @@ final class RecorderEngine {
     private var sysDecoded = 0
     private var micMaxGap: Double = 0
     private var sckMicConverter: AVAudioConverter?
+    private var micBuffers = 0
 
     private final class StopContext {
         let sema = DispatchSemaphore(value: 0)
@@ -404,6 +409,7 @@ final class RecorderEngine {
         micTrack  = mic
         sysSamples = 0
         micSamples = 0
+        clockStart = nil
         isRecording = true
         startLevels()
 
@@ -489,7 +495,8 @@ final class RecorderEngine {
         micConverter  = AVAudioConverter(from: hwFmt, to: targetMicFmt)
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFmt) {
-            [weak self] buffer, _ in self?.handleMicBuffer(buffer)
+            [weak self] buffer, when in
+            self?.handleMicBuffer(buffer, hostSeconds: when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : nil)
         }
         audioEngine.prepare()
         do {
@@ -579,7 +586,7 @@ final class RecorderEngine {
             UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr
     }
 
-    private func handleMicBuffer(_ inputBuf: AVAudioPCMBuffer) {
+    private func handleMicBuffer(_ inputBuf: AVAudioPCMBuffer, hostSeconds: Double?) {
         guard let converter = micConverter else { return }
 
         let ratio = kSampleRate / inputBuf.format.sampleRate
@@ -602,16 +609,12 @@ final class RecorderEngine {
         writeQ.async { [weak self, converted] in
             guard let self, self.isRecording,
                   let track = self.micTrack, track.isReadyForMoreMediaData else { return }
-            let pts = CMTime(value: self.micSamples,
-                             timescale: CMTimeScale(kSampleRate))
-            self.micSamples += Int64(frameLength)
             if let ch = converted.floatChannelData {
                 self.micPeakRms = max(self.micPeakRms, rms(ch[0], Int(frameLength)))
             }
             self.lastMicBufferAt = Date()
-            if let sb = makeSampleBuffer(from: converted, pts: pts) {
-                track.append(sb)
-            }
+            let target = hostSeconds.flatMap { self.clockSamples(hostSeconds: $0) }
+            self.appendAligned(converted, target: target, track: track, position: &self.micSamples)
         }
     }
 
@@ -814,7 +817,7 @@ final class RecorderEngine {
 
                 // Advance sysSamples to cover the outage so resumed buffers have correct PTS.
                 // writeQ.sync is safe on a background queue (no main → writeQ → main path).
-                self.writeQ.sync { self.sysSamples += gapFrames }
+                _ = gapFrames
 
                 // Build the replacement stream without touching any engine state
                 let result = Result { try self.buildSCKStream() }
@@ -842,7 +845,6 @@ final class RecorderEngine {
                     case .failure(let error):
                         // Undo the sample advance so any future restart re-measures the gap.
                         // writeQ.async avoids a sync-from-main deadlock risk.
-                        self.writeQ.async { self.sysSamples -= gapFrames }
                         self.sckRestartPending = false
                         fputs("[recorder] SCStream restart failed: \(error.localizedDescription)"
                               + " — system audio silent for remainder of recording\n", stderr)
@@ -856,15 +858,72 @@ final class RecorderEngine {
     func appendSystemAudio(_ buffer: CMSampleBuffer) {
         guard isRecording,
               let track = sysTrack, track.isReadyForMoreMediaData else { return }
-        let n   = CMSampleBufferGetNumSamples(buffer)
-        let pts = CMTime(value: sysSamples, timescale: CMTimeScale(kSampleRate))
-        sysSamples += Int64(n)
-        if let stamped = restamp(buffer, pts: pts) {
-            track.append(stamped)
-        }
         sysBuffers += 1
-        if withFloatSamples(buffer, { p, n in sysPeakRms = max(sysPeakRms, rms(p, n)) }) { sysDecoded += 1 }
+        let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
+        if clockStart == nil, pts.isValid { clockStart = pts }
+        guard let pcm = pcmBuffer(from: buffer) else { return }
+        sysDecoded += 1
+        if let ch = pcm.floatChannelData { sysPeakRms = max(sysPeakRms, rms(ch[0], Int(pcm.frameLength))) }
+        appendAligned(pcm, target: clockSamples(pts), track: track, position: &sysSamples)
         fillMicSilence()
+    }
+
+    // MARK: – Clock-anchored track positions
+
+    private func clockSamples(_ pts: CMTime) -> Int64? {
+        guard pts.isValid, let start = clockStart else { return nil }
+        return Int64((CMTimeSubtract(pts, start).seconds * kSampleRate).rounded())
+    }
+
+    private func clockSamples(hostSeconds: Double) -> Int64? {
+        guard let start = clockStart else { return nil }
+        return Int64(((hostSeconds - start.seconds) * kSampleRate).rounded())
+    }
+
+    /// Appends silence to `track` from `position` up to `target` (chunks ≤ 10 s). Returns the new position.
+    private func fillSilence(track: AVAssetWriterInput, from position: Int64, to target: Int64) -> Int64 {
+        var pos = position
+        while pos < target, track.isReadyForMoreMediaData {
+            let n = min(target - pos, Int64(10 * kSampleRate))
+            guard let silence = AVAudioPCMBuffer(pcmFormat: targetMicFmt, frameCapacity: AVAudioFrameCount(n)) else { break }
+            silence.frameLength = AVAudioFrameCount(n)
+            if let ch = silence.floatChannelData {
+                for c in 0..<Int(targetMicFmt.channelCount) { ch[c].update(repeating: 0, count: Int(n)) }
+            }
+            guard let sb = makeSampleBuffer(from: silence, pts: CMTime(value: pos, timescale: CMTimeScale(kSampleRate))),
+                  track.append(sb) else { break }
+            pos += n
+        }
+        return pos
+    }
+
+    /// Appends PCM at the clock-derived target: a gap is filled with silence, a head that overlaps
+    /// audio already written is trimmed. Without a target (no clock yet) the buffer is appended contiguously.
+    private func appendAligned(_ pcm: AVAudioPCMBuffer, target: Int64?, track: AVAssetWriterInput, position: inout Int64) {
+        var pcm = pcm
+        if let target {
+            if target > position + kAlignTolerance {
+                position = fillSilence(track: track, from: position, to: target)
+            } else if target < position - kAlignTolerance {
+                let trim = Int(position - target)
+                guard trim < Int(pcm.frameLength), let rest = trimmedHead(pcm, frames: trim) else { return }
+                pcm = rest
+            }
+        }
+        let n = Int64(pcm.frameLength)
+        if let sb = makeSampleBuffer(from: pcm, pts: CMTime(value: position, timescale: CMTimeScale(kSampleRate))),
+           track.append(sb) {
+            position += n
+        }
+    }
+
+    private func trimmedHead(_ pcm: AVAudioPCMBuffer, frames: Int) -> AVAudioPCMBuffer? {
+        let remaining = Int(pcm.frameLength) - frames
+        guard remaining > 0, let out = AVAudioPCMBuffer(pcmFormat: pcm.format, frameCapacity: AVAudioFrameCount(remaining)),
+              let src = pcm.floatChannelData, let dst = out.floatChannelData else { return nil }
+        out.frameLength = AVAudioFrameCount(remaining)
+        for c in 0..<Int(pcm.format.channelCount) { dst[c].update(from: src[c] + frames, count: remaining) }
+        return out
     }
 
     // Called from SCOutputDelegate on writeQ (MIC_PATH=sck) — same track, same clock as the engine path
@@ -876,15 +935,15 @@ final class RecorderEngine {
         let n = CMSampleBufferGetNumSamples(buffer)
         guard n > 0, let fmtDesc = CMSampleBufferGetFormatDescription(buffer),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc)?.pointee else { return }
+        micBuffers += 1
 
+        let target = clockSamples(CMSampleBufferGetPresentationTimeStamp(buffer))
+        guard let src = pcmBuffer(from: buffer) else { return }
         if asbd.mSampleRate == kSampleRate && Int(asbd.mChannelsPerFrame) == kChannels {
-            withFloatSamples(buffer) { p, len in micPeakRms = max(micPeakRms, rms(p, len)) }
-            let pts = CMTime(value: micSamples, timescale: CMTimeScale(kSampleRate))
-            micSamples += Int64(n)
-            if let stamped = restamp(buffer, pts: pts) { track.append(stamped) }
+            if let ch = src.floatChannelData { micPeakRms = max(micPeakRms, rms(ch[0], Int(src.frameLength))) }
+            appendAligned(src, target: target, track: track, position: &micSamples)
             return
         }
-        guard let src = pcmBuffer(from: buffer) else { return }
         if sckMicConverter == nil { sckMicConverter = AVAudioConverter(from: src.format, to: targetMicFmt) }
         guard let converter = sckMicConverter else { return }
         let capacity = AVAudioFrameCount(Double(src.frameLength) * (kSampleRate / src.format.sampleRate)) + 16
@@ -899,9 +958,7 @@ final class RecorderEngine {
         }
         guard convErr == nil, converted.frameLength > 0 else { return }
         if let ch = converted.floatChannelData { micPeakRms = max(micPeakRms, rms(ch[0], Int(converted.frameLength))) }
-        let pts = CMTime(value: micSamples, timescale: CMTimeScale(kSampleRate))
-        micSamples += Int64(converted.frameLength)
-        if let sb = makeSampleBuffer(from: converted, pts: pts) { track.append(sb) }
+        appendAligned(converted, target: target, track: track, position: &micSamples)
     }
 
     // MARK: – Live levels (levels.json)
@@ -926,6 +983,8 @@ final class RecorderEngine {
             guard let self, self.isRecording else { return }
             let sys = self.sysPeakRms, mic = self.micPeakRms, micAt = self.lastMicBufferAt
             let bufs = self.sysBuffers, decoded = self.sysDecoded, gap = self.micMaxGap
+            let mbufs = self.micBuffers
+            self.micBuffers = 0
             self.sysPeakRms = 0
             self.micPeakRms = 0
             self.sysBuffers = 0
@@ -942,6 +1001,7 @@ final class RecorderEngine {
                     "micEnabled": kRecordMic,
                     "micPath":    kMicPathSCK ? "sck" : "engine",
                     "micMaxGap":  (gap * 1000).rounded() / 1000,
+                    "micBuffers": mbufs,
                     "sysBuffers": bufs,
                     "sysDecoded": decoded,
                 ]
@@ -959,25 +1019,10 @@ final class RecorderEngine {
     /// Without it AVAssetWriter stops writing fragments (seen after ~220 s) and a late
     /// mic would be stamped at the wrong time. Runs on writeQ.
     private func fillMicSilence() {
-        let lag = sysSamples - micSamples
-        guard lag > Int64(kMicMaxLag * kSampleRate) else { return }
-        // ทีละไม่เกิน 10s — หลัง sleep นาน lag อาจเป็นชั่วโมง ห้าม allocate ทีเดียว
-        let n = min(lag, Int64(10 * kSampleRate))
-        guard
-              let track = micTrack, track.isReadyForMoreMediaData,
-              let silence = AVAudioPCMBuffer(pcmFormat: targetMicFmt,
-                                             frameCapacity: AVAudioFrameCount(n))
-        else { return }
-        silence.frameLength = AVAudioFrameCount(n)
-        if let ch = silence.floatChannelData {
-            for c in 0..<Int(targetMicFmt.channelCount) {
-                ch[c].update(repeating: 0, count: Int(n))
-            }
-        }
-        let pts = CMTime(value: micSamples, timescale: CMTimeScale(kSampleRate))
-        if let sb = makeSampleBuffer(from: silence, pts: pts), track.append(sb) {
-            micSamples += n
-        }
+        // backstop เมื่อไมค์ไม่ส่งอะไรเลย (fragment ค้างหลัง ~220s) — เว้น 1 s ไว้ให้ buffer ไมค์ที่กลับมาไม่ทับของเดิม
+        let margin = Int64(kMicMaxLag * kSampleRate)
+        guard sysSamples - micSamples > 2 * margin, let track = micTrack else { return }
+        micSamples = fillSilence(track: track, from: micSamples, to: sysSamples - margin)
     }
 
     // MARK: – Finish

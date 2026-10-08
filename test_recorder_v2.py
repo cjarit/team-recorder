@@ -1110,6 +1110,13 @@ def test_stop_ok_needs_check_recording_skips_mixdown(monkeypatch, tmp_path):
     assert spawned == []
 
 
+def test_stop_ok_skip_mixdown_env_keeps_two_tracks(monkeypatch, tmp_path):
+    """SKIP_MIXDOWN=1 (debug) keeps the dual-track file so scripts/xcorr.py can measure it."""
+    monkeypatch.setenv("SKIP_MIXDOWN", "1")
+    _, spawned = _stop_ok_with_validation(monkeypatch, tmp_path, valid=True)
+    assert spawned == []
+
+
 def test_suppress_auto_start_set_when_manual_stop_during_active_meeting():
     """Manual stop while Teams UDP is up → suppress_auto_start should be True.
     Verifies the logic contract (not full loop execution).
