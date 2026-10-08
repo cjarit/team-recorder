@@ -200,7 +200,7 @@ class WatcherManager {
 
     /// Stop ONLY the process this app started — never touches external watchers.
     /// Called by applicationWillTerminate so quitting the menu bar app does not
-    /// kill a watcher that was started by Start Recorder.command or `make run`.
+    /// kill a watcher that was started by `make run`.
     func stopManagedOnly() {
         managedProcess?.terminate()
     }

@@ -1,5 +1,34 @@
 # Changelog — Team Recorder
 
+## v2.0.0 — 2026-10-08
+
+### Two release lines
+- `main` = v2.x, macOS 15+ (Swift tools 6.0, language mode 5). `release/1.x` = macOS 14, bug fixes only; v1.2.4 remains published.
+
+### Identity, install, upgrade
+- Every build signed with the self-signed `Team Recorder Signing` certificate (`make cert`); TCC grants persist across reinstalls (gate: `plan/phase1-tcc-log.md`)
+- Self-healing launch after a version change (stops the previous bundle's watcher, clears stale state, keeps `.env`/calendars/Launch at Login); stale-row instruction for Screen Recording when upgrading from the ad-hoc line
+- `make dmg`; `make release` builds zip + dmg; Uninstall… menu item; Calendar step skippable (`PermissionStatus.skipped`)
+- pgrep fallback counts only python processes
+
+### UI
+- SwiftUI popover (left-click) with live level meters; Settings/Status window (Status · General · Calendars · Permissions) incl. mic picker, Record my voice, Check for Updates (GitHub Releases API); right-click menu reduced to 5 items; all 25 v1.2.4 actions mapped (`plan/v2.0-ui-inventory.md`)
+- `permissions.json` snapshot written at launch
+
+### Audio
+- Mic via ScreenCaptureKit `captureMicrophone` by default (BT gate passed); `MIC_PATH=engine` fallback; `RECORD_MIC=0` = system audio only
+- Clock-anchored track positions (`clockStart`/`appendAligned`): fixes the ~1 %/s skew between tracks (echo on speakers)
+- `--mixdown`: speaker-bleed probe + delay-aware mic ducking; writes `<file>.meta.json` (speechRatio at −45 dBFS, bleedCorr, bleedLagMs, ducked)
+- `levels.json` sidecar once per second while recording (sys/mic dBFS, micAlive, micPath, micMaxGap, buffer counters)
+- App moves speechless recordings ≥ 180 s to `Empty/`; mic-silent notification after 60 s
+- `SKIP_MIXDOWN=1` keeps two tracks for measurement (`scripts/xcorr.py`, `scripts/speech_ratio.py`)
+
+### Removed
+- `Setup.command`, `Start Recorder.command`
+- Tests: 137 passed, 3 skipped
+
+---
+
 ## v1.2.4 — 2026-09-29
 
 ### Resilient to Bluetooth hangs; single-track output for NotebookLM

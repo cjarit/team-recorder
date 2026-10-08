@@ -37,7 +37,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         // Called when 'open App.app' runs and the app is already running —
-        // i.e. the user double-clicked Start Recorder.command or the .app again.
+        // i.e. the user double-clicked the .app again.
         if !UserDefaults.standard.bool(forKey: "setupCompleted") {
             // Setup incomplete — show guide; do NOT auto-start (setup does it on finish)
             SetupWindowController.shared.show()
