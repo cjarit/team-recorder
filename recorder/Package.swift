@@ -1,10 +1,10 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
 import PackageDescription
 
 let package = Package(
     name: "recorder",
     platforms: [
-        .macOS(.v14)   // macOS 14+ Sonoma — minimum supported OS for public release
+        .macOS(.v15)   // macOS 15+ Sequoia — minimum supported OS for public release
     ],
     targets: [
         .executableTarget(
@@ -14,5 +14,6 @@ let package = Package(
                 .unsafeFlags(["-strict-concurrency=minimal"])
             ]
         )
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

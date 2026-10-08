@@ -1149,10 +1149,10 @@ def run_doctor() -> int:
     # macOS version
     mac_ver = platform.mac_ver()[0]
     try:
-        if int(mac_ver.split(".")[0]) >= 14:
+        if int(mac_ver.split(".")[0]) >= 15:
             _check(f"macOS {mac_ver}", "ok", "รองรับ ScreenCaptureKit")
         else:
-            _check(f"macOS {mac_ver}", "fail", "ต้องการ macOS 14+")
+            _check(f"macOS {mac_ver}", "fail", "ต้องการ macOS 15+ (Sequoia)")
             failures += 1
     except ValueError:
         _check(f"macOS {mac_ver or '?'}", "warn", "ตรวจ version ไม่ได้")
@@ -1627,12 +1627,12 @@ def main():
         log("[WARN] icalBuddy ไม่พบ — ชื่อ meeting จะเป็น 'Teams Meeting' เสมอ")
         log("  → ติดตั้งด้วย: brew install ical-buddy")
 
-    # ตรวจ macOS version (ต้องการ 14+ สำหรับ ScreenCaptureKit + EKEventStore full access)
+    # ตรวจ macOS version (ต้องการ 15+ — สาย v2; สาย v1.2.x บน release/1.x ยังรองรับ 14)
     mac_ver = platform.mac_ver()[0]
     try:
         major = int(mac_ver.split(".")[0])
-        if major < 14:
-            log(f"[ERROR] macOS {mac_ver} ไม่รองรับ — ต้องการ macOS 14+ (Sonoma)")
+        if major < 15:
+            log(f"[ERROR] macOS {mac_ver} ไม่รองรับ — ต้องการ macOS 15+ (Sequoia)")
             sys.exit(1)
     except ValueError:
         pass

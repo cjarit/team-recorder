@@ -1,6 +1,13 @@
 # Now — Team Recorder
 
-## Current focus
+## Current focus (2026-10-08) — v2.0 on `main`, v1.2.x maintenance on `release/1.x`
+
+- Plan: `plan/v2.0-plan.md` (decisions D-1…D-9 answered). Spec for all agents: `plan/v2.0-spec.md`.
+- Two release lines: `release/1.x` = macOS 14, bug fixes only (v1.2.4 is Latest on GitHub Releases); `main` = v2.0, macOS 15+.
+- Phase 0 in progress: branch cut, planning docs + popover WIP committed, macOS 15 floor bump + build/test verification running, UI inventory (`plan/v2.0-ui-inventory.md`) being generated.
+- Next: Phase 1 (self-signed signing identity + 3-cycle TCC persistence gate, incl. the never-seen-the-cert Mac test) before any on-device UI round.
+
+## Previous focus — v1.2.4 (released 2026-09-29)
 
 **v1.2.4 — Resilient to Bluetooth hangs; single-track output for NotebookLM.**
 Two critical incidents identified and fixed:
@@ -30,7 +37,7 @@ Tests: 136 passed, 3 skipped. Tests show files playable; natural BT collision no
 | 4 — Track merge | ✅ Done | `recorder --mixdown` post-recording (NotebookLM single-track read); original kept if validation fails |
 | 5 — Python respawn path | ✅ Done | Start timeout (no ERROR token) → terminate + respawn immediately; status "error" + one notification per meeting |
 | 6 — Docs + tests | ✅ Done | CLAUDE.md stdin/CLI/constants/Known Issues updated; 136 passed, 3 skipped |
-| 7 — Release | ⏳ Pending | v1.2.4 committed on branch, awaiting final install + user go to publish |
+| 7 — Release | ✅ Done | v1.2.4 published 2026-09-29 (GitHub Releases, Latest) |
 
 ## Open items (v1.2.4+)
 

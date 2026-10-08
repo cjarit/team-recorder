@@ -37,8 +37,8 @@ fi
 
 MACOS_VER=$(sw_vers -productVersion)
 MACOS_MAJOR=$(echo "$MACOS_VER" | cut -d. -f1)
-if [[ "$MACOS_MAJOR" -lt 14 ]]; then
-  fail "ต้องการ macOS 14 (Sonoma) ขึ้นไป — เครื่องนี้ใช้ macOS $MACOS_VER"
+if [[ "$MACOS_MAJOR" -lt 15 ]]; then
+  fail "ต้องการ macOS 15 (Sequoia) ขึ้นไป — เครื่องนี้ใช้ macOS $MACOS_VER"
   exit 1
 fi
 ok "macOS $MACOS_VER"
