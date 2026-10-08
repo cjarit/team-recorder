@@ -50,6 +50,7 @@ struct RecorderLevels: Codable {
     var micRms: Double
     var micAlive: Bool
     var micDevice: String?
+    var micEnabled: Bool?
 
     static var fileURL: URL {
         RecorderStatus.statusFileURL.deletingLastPathComponent().appendingPathComponent("levels.json")

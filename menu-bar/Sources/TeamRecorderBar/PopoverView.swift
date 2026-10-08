@@ -35,7 +35,7 @@ struct PopoverActions {
     var openLastRecording: () -> Void
     var openFolder: () -> Void
     var openPermission: (PermissionPane) -> Void
-    var showFullMenu: () -> Void
+    var openWindow: () -> Void
     var quit: () -> Void
 }
 
@@ -56,7 +56,7 @@ struct PopoverView: View {
             permissionRow("Calendar", snapshot.calendar, .calendar)
             Divider().padding(.vertical, 4)
             MenuRow(action: actions.openFolder) { Text("Open Recordings Folder") }
-            MenuRow(action: actions.showFullMenu) { Text("More…") }
+            MenuRow(action: actions.openWindow) { Text("Open Team Recorder…") }
             MenuRow(action: actions.quit) {
                 Text("Quit Team Recorder")
                 Spacer()
@@ -230,7 +230,7 @@ private struct LevelMeters: View {
                 meter("Others", value: fraction(levels.sysRms), note: nil)
                 meter("My mic",
                       value: levels.micAlive ? fraction(levels.micRms) : 0,
-                      note: levels.micAlive ? nil : "not captured")
+                      note: levels.micEnabled == false ? "off" : levels.micAlive ? nil : "not captured")
             } else {
                 meter("Others", value: 0, note: "no data")
                 meter("My mic", value: 0, note: "no data")
@@ -244,7 +244,7 @@ private struct LevelMeters: View {
             Text(label).foregroundStyle(.secondary).frame(width: 46, alignment: .leading)
             ProgressView(value: value).progressViewStyle(.linear)
             if let note {
-                Text(note).foregroundStyle(note == "no data" ? Color.secondary : Color.orange)
+                Text(note).foregroundStyle(note == "not captured" ? Color.orange : Color.secondary)
                     .frame(width: 74, alignment: .trailing)
             }
         }

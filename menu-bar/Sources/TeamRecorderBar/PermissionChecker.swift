@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreGraphics
 import EventKit
@@ -9,6 +10,12 @@ enum PermissionStatus { case granted, denied, undetermined, skipped }
 /// Static helpers to check and request macOS permissions needed by Team Recorder.
 /// All request functions call back on the main thread.
 struct PermissionChecker {
+
+    /// Open the System Settings → Privacy & Security pane for a permission.
+    static func openPane(_ pane: String) {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
+        NSWorkspace.shared.open(url)
+    }
 
     // MARK: — Snapshot file (read by the Phase 1 TCC gate and the Status tab)
 

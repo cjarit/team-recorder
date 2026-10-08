@@ -14,19 +14,8 @@ class StatusBarController {
 
     // Dynamically updated menu items
     private var statusLine:          NSMenuItem!
-    private var startRecordingItem:  NSMenuItem!
-    private var stopRecordingItem:   NSMenuItem!
     private var toggleItem:          NSMenuItem!
-    private var recoverItem:         NSMenuItem!
-    private var folderPathItem:      NSMenuItem!   // shows current RECORDING_DIR (disabled)
-    private var changeFolderItem:    NSMenuItem!
-    private var lastRecordingItem:   NSMenuItem!
-    private var launchAtLoginItem:   NSMenuItem!
     private var launchWarningItem:   NSMenuItem!   // hidden unless watcher failed to start
-    fileprivate var calendarStatusItem: NSMenuItem!
-    private var permSubmenuDelegate:    PermSubmenuDelegate!    // kept alive for NSMenuDelegate
-    private var trackedCalendarsItem:   NSMenuItem!
-    private var calSubmenuDelegate:     CalendarsSubmenuDelegate! // kept alive for NSMenuDelegate
 
     // File watcher for status.json
     private var fileSource: DispatchSourceFileSystemObject?
@@ -68,7 +57,6 @@ class StatusBarController {
     private func buildMenu() {
         let menu = NSMenu()
 
-        // ── Group 1: Identity + Status ─────────────────────────
         let titleItem = NSMenuItem()
         titleItem.attributedTitle = NSAttributedString(
             string: "Team Recorder",
@@ -93,136 +81,23 @@ class StatusBarController {
 
         menu.addItem(.separator())
 
-        // ── Group 2: Recording controls ────────────────────────
-        startRecordingItem = NSMenuItem(
-            title: "Start Recording",
-            action: #selector(startRecording),
+        let openItem = NSMenuItem(
+            title: "Open Team Recorder…",
+            action: #selector(openSettingsWindow),
             keyEquivalent: ""
         )
-        startRecordingItem.target = self
-        startRecordingItem.image = Self.menuSymbol("record.circle")
-        menu.addItem(startRecordingItem)
+        openItem.target = self
+        openItem.image = Self.menuSymbol("macwindow")
+        menu.addItem(openItem)
 
-        stopRecordingItem = NSMenuItem(
-            title: "Stop Recording",
-            action: #selector(stopRecording),
-            keyEquivalent: ""
-        )
-        stopRecordingItem.target = self
-        stopRecordingItem.image = Self.menuSymbol("stop.fill")
-        menu.addItem(stopRecordingItem)
-
-        menu.addItem(.separator())
-
-        // ── Group 3: Watcher + Library ─────────────────────────
         toggleItem = NSMenuItem(
-            title: "Start Watcher",
+            title: "Pause Watching",
             action: #selector(toggleWatcher),
             keyEquivalent: ""
         )
         toggleItem.target = self
         toggleItem.image = Self.menuSymbol("eye")
         menu.addItem(toggleItem)
-
-        recoverItem = NSMenuItem(
-            title: "Recover Recorder…",
-            action: #selector(recoverRecorder),
-            keyEquivalent: ""
-        )
-        recoverItem.target = self
-        recoverItem.image = Self.menuSymbol("arrow.clockwise")
-        recoverItem.isHidden = true
-        menu.addItem(recoverItem)
-
-        let folderItem = NSMenuItem(title: "Recordings Folder", action: nil, keyEquivalent: "")
-        folderItem.image = Self.menuSymbol("folder")
-        let folderSubmenu = NSMenu()
-
-        folderPathItem = NSMenuItem(title: "~/Documents/Teams Recording", action: nil, keyEquivalent: "")
-        folderPathItem.isEnabled = false
-        folderSubmenu.addItem(folderPathItem)
-
-        let openFolderItem = NSMenuItem(
-            title: "Open Folder",
-            action: #selector(openRecordingsFolder),
-            keyEquivalent: ""
-        )
-        openFolderItem.target = self
-        folderSubmenu.addItem(openFolderItem)
-
-        folderSubmenu.addItem(.separator())
-
-        changeFolderItem = NSMenuItem(
-            title: "Change Folder…",
-            action: #selector(changeRecordingsFolder),
-            keyEquivalent: ""
-        )
-        changeFolderItem.target = self
-        folderSubmenu.addItem(changeFolderItem)
-
-        folderItem.submenu = folderSubmenu
-        menu.addItem(folderItem)
-
-        lastRecordingItem = NSMenuItem(title: "No recordings yet", action: nil, keyEquivalent: "")
-        lastRecordingItem.isEnabled = false
-        lastRecordingItem.image = Self.menuSymbol("clock")
-        menu.addItem(lastRecordingItem)
-
-        menu.addItem(.separator())
-
-        // ── Group 4: Settings ──────────────────────────────────
-        trackedCalendarsItem = NSMenuItem(title: "Tracked Calendars", action: nil, keyEquivalent: "")
-        trackedCalendarsItem.image = Self.menuSymbol("calendar")
-        let calSubmenu = NSMenu()
-        calSubmenuDelegate = CalendarsSubmenuDelegate()
-        calSubmenu.delegate = calSubmenuDelegate
-        trackedCalendarsItem.submenu = calSubmenu
-        menu.addItem(trackedCalendarsItem)
-
-        let permItem = NSMenuItem(title: "Permissions", action: nil, keyEquivalent: "")
-        permItem.image = Self.menuSymbol("lock.shield")
-        let permSubmenu = NSMenu()
-        permSubmenuDelegate = PermSubmenuDelegate()
-        permSubmenuDelegate.controller = self
-        permSubmenu.delegate = permSubmenuDelegate
-
-        let screenItem = NSMenuItem(
-            title: "Screen Recording…",
-            action: #selector(openPermScreenRecording),
-            keyEquivalent: ""
-        )
-        screenItem.target = self
-        permSubmenu.addItem(screenItem)
-
-        let micItem = NSMenuItem(
-            title: "Microphone…",
-            action: #selector(openPermMicrophone),
-            keyEquivalent: ""
-        )
-        micItem.target = self
-        permSubmenu.addItem(micItem)
-
-        let calItem = NSMenuItem(
-            title: "Calendar…",
-            action: #selector(openPermCalendar),
-            keyEquivalent: ""
-        )
-        calItem.target = self
-        permSubmenu.addItem(calItem)
-
-        permSubmenu.addItem(.separator())
-
-        calendarStatusItem = NSMenuItem(
-            title: calendarMenuTitle(),
-            action: #selector(checkCalendarAccess),
-            keyEquivalent: ""
-        )
-        calendarStatusItem.target = self
-        calendarStatusItem.toolTip = "Click to refresh calendar events."
-        permSubmenu.addItem(calendarStatusItem)
-
-        permItem.submenu = permSubmenu
-        menu.addItem(permItem)
 
         let setupItem = NSMenuItem(
             title: "Setup Guide…",
@@ -234,15 +109,6 @@ class StatusBarController {
         menu.addItem(setupItem)
 
         menu.addItem(.separator())
-
-        // ── Group 5: App ───────────────────────────────────────
-        launchAtLoginItem = NSMenuItem(
-            title: "Launch at Login",
-            action: #selector(toggleLaunchAtLogin),
-            keyEquivalent: ""
-        )
-        launchAtLoginItem.target = self
-        menu.addItem(launchAtLoginItem)
 
         let uninstallItem = NSMenuItem(
             title: "Uninstall Team Recorder…",
@@ -330,7 +196,7 @@ class StatusBarController {
                 self?.popover.performClose(nil)
                 self?.openPrefPane(pane.rawValue)
             },
-            showFullMenu:      { [weak self] in DispatchQueue.main.async { self?.showFullMenu() } },
+            openWindow:        { [weak self] in DispatchQueue.main.async { self?.openSettingsWindow() } },
             quit:              { NSApp.terminate(nil) }
         )
     }
@@ -434,35 +300,11 @@ class StatusBarController {
         NSWorkspace.shared.open(WatcherManager.shared.recordingDirectory())
     }
 
-    @objc private func changeRecordingsFolder() {
-        NSApp.activate(ignoringOtherApps: true)   // bring picker above other windows
-        let panel = NSOpenPanel()
-        panel.canChooseFiles       = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.prompt               = "Choose Folder"
-        panel.message              = "Select the folder where recordings will be saved"
-        panel.directoryURL         = WatcherManager.shared.recordingDirectory()
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        WatcherManager.shared.setRecordingDir(url)
-        // Update the path display optimistically — next refresh will confirm
-        folderPathItem.title = abbreviatedPath(url.path)
-    }
-
     @objc private func openLastRecording() {
         guard let path = currentStatus?.lastRecordingPath else { return }
         NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
     }
 
-    @objc private func openPermScreenRecording() {
-        openPrefPane("Privacy_ScreenCapture")
-    }
-    @objc private func openPermMicrophone() {
-        openPrefPane("Privacy_Microphone")
-    }
-    @objc private func openPermCalendar() {
-        openPrefPane("Privacy_Calendars")
-    }
     private func openPrefPane(_ pane: String) {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
         NSWorkspace.shared.open(url)
@@ -521,9 +363,6 @@ class StatusBarController {
         currentStatus = RecorderStatus.load()
         updateStatusLine()
         updateControlItems()
-        updateFolderItems()
-        updateLastRecordingItem()
-        updateLaunchAtLoginItem()
         updateLaunchWarning()
         updateIcon()
         updatePopover()
@@ -540,7 +379,7 @@ class StatusBarController {
             return
         }
         guard let levels = RecorderLevels.load(), !levels.isStale else { return }
-        if levels.micAlive {
+        if levels.micAlive || levels.micEnabled == false {
             micSilentSince = nil
             return
         }
@@ -646,63 +485,17 @@ class StatusBarController {
 
     /// Update all three watcher/recording control items together.
     private func updateControlItems() {
-        let state     = currentStatus?.state ?? "idle"
-        let running   = WatcherManager.shared.isRunning
-        let stale     = isStaleRecordingState
-        let recording = state == "recording" && !stale
-        let stopping  = state == "stopping" && !stale
+        let running = WatcherManager.shared.isRunning
 
-        // ▶ Start Recording: enabled when watcher is up and not already recording/stopping
-        startRecordingItem.isEnabled = running && !recording && !stopping && !stale
-
-        // ■ Stop Recording: enabled only while recording
-        stopRecordingItem.isEnabled = recording
-        recoverItem.isHidden = !stale && state != "error"
-        recoverItem.isEnabled = stale || state == "error"
-
-        // Start/Stop Watcher toggle — image tracks title
+        // Pause/Start Watching toggle — image tracks title
         if WatcherManager.shared.watcherURL == nil {
             toggleItem.title     = "Watcher not configured"
             toggleItem.image     = Self.menuSymbol("eye")
             toggleItem.isEnabled = false
         } else {
-            toggleItem.title     = running ? "Stop Watcher" : "Start Watcher"
+            toggleItem.title     = running ? "Pause Watching" : "Start Watching"
             toggleItem.image     = Self.menuSymbol(running ? "eye.slash" : "eye")
             toggleItem.isEnabled = true
-        }
-    }
-
-    private func updateFolderItems() {
-        let dir = WatcherManager.shared.recordingDirectory()
-        folderPathItem.title = abbreviatedPath(dir.path)
-
-        // Disable "Change Folder…" while a recording is active or stopping
-        let state = currentStatus?.state ?? "idle"
-        changeFolderItem.isEnabled = (state != "recording" && state != "stopping") || isStaleRecordingState
-    }
-
-    private func updateLastRecordingItem() {
-        guard let name = currentStatus?.lastRecordingName else {
-            lastRecordingItem.title    = "No recordings yet"
-            lastRecordingItem.isEnabled = false
-            lastRecordingItem.action   = nil
-            return
-        }
-        var label = "Last: \(name)"
-        if let savedAt = currentStatus?.lastSavedAt, savedAt.count >= 16 {
-            let time = String(savedAt.dropFirst(11).prefix(5))  // "HH:MM"
-            label = "Last: \(name) — \(time)"
-        }
-        if let reason = currentStatus?.lastFallbackReason, !reason.isEmpty {
-            label += " — fallback: \(reason)"
-        }
-        lastRecordingItem.title = label
-        if currentStatus?.lastRecordingPath != nil {
-            lastRecordingItem.isEnabled = true
-            lastRecordingItem.action    = #selector(openLastRecording)
-            lastRecordingItem.target    = self
-        } else {
-            lastRecordingItem.isEnabled = false
         }
     }
 
@@ -727,35 +520,14 @@ class StatusBarController {
         alert.informativeText = error.userDescription
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Run Setup Guide")
-        alert.addButton(withTitle: "Open Project Folder")
         alert.addButton(withTitle: "Dismiss")
         NSApp.activate(ignoringOtherApps: true)
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             SetupWindowController.shared.show()
-        case .alertSecondButtonReturn:
-            if let dir = WatcherManager.shared.projectDirectory {
-                NSWorkspace.shared.open(dir)
-            }
         default:
             break
         }
-    }
-
-    @objc private func checkCalendarAccess() {
-        NSApp.activate(ignoringOtherApps: true)
-        CalendarEventBridge.shared.writeEventsIfAuthorized()
-        let ok = PermissionChecker.calendar() == .granted
-        calendarStatusItem.title = calendarMenuTitle()
-        let result = NSAlert()
-        result.messageText = ok ? "Calendar Access Confirmed" : "Calendar Access Not Granted"
-        result.informativeText = ok
-            ? "Calendar events written. Recordings will be named after meeting titles."
-            : "Calendar access is not granted.\nGo to System Settings → Privacy & Security → Calendars → enable TeamRecorderBar."
-        result.alertStyle = ok ? .informational : .warning
-        result.addButton(withTitle: "OK")
-        NSApp.activate(ignoringOtherApps: true)
-        result.runModal()
     }
 
     // MARK: — Icon helpers
@@ -804,15 +576,6 @@ class StatusBarController {
 
     // MARK: — Helpers
 
-    /// Shorten a path for display: ~/Documents/… instead of /Users/name/Documents/…
-    private func abbreviatedPath(_ path: String) -> String {
-        let home = NSHomeDirectory()
-        if path.hasPrefix(home) {
-            return "~" + String(path.dropFirst(home.count))
-        }
-        return path
-    }
-
     private var isStaleRecordingState: Bool {
         guard let s = currentStatus else { return false }
         if s.state == "recording" && !WatcherManager.shared.isRunning {
@@ -841,6 +604,7 @@ class StatusBarController {
     }
 
     private func sendSavedNotification(path: String, name: String?) {
+        guard UserDefaults.standard.object(forKey: "notifyOnSave") as? Bool ?? true else { return }
         sendNotification(body: "Saved: \(name ?? URL(fileURLWithPath: path).lastPathComponent)", filePath: path)
     }
 
@@ -862,58 +626,15 @@ class StatusBarController {
         }
     }
 
-    // MARK: — Setup Guide & Launch at Login
+    // MARK: — Setup Guide & window
 
     @objc private func openSetupGuide() {
         SetupWindowController.shared.show()
     }
 
-    /// Update checkmark state and tooltip for "Launch at Login".
-    /// Called from refresh() so the state always reflects the actual SMAppService status.
-    private func updateLaunchAtLoginItem() {
-        let svc = SMAppService.mainApp
-        switch svc.status {
-        case .enabled:
-            launchAtLoginItem.state     = .on
-            launchAtLoginItem.isEnabled = true
-            launchAtLoginItem.toolTip   = nil
-        case .requiresApproval:
-            // ผู้ใช้ต้องอนุมัติใน System Settings → General → Login Items
-            launchAtLoginItem.state     = .mixed
-            launchAtLoginItem.isEnabled = true
-            launchAtLoginItem.toolTip   = "Waiting for approval in System Settings → General → Login Items"
-        case .notFound:
-            // app ไม่ได้อยู่ใน /Applications/ — SMAppService ต้องการ path นี้เพื่อ register
-            launchAtLoginItem.state     = .off
-            launchAtLoginItem.isEnabled = true
-            launchAtLoginItem.toolTip   = "Move TeamRecorderBar.app to /Applications/ to enable this"
-        default:
-            launchAtLoginItem.state     = .off
-            launchAtLoginItem.isEnabled = true
-            launchAtLoginItem.toolTip   = nil
-        }
-    }
-
-    @objc private func toggleLaunchAtLogin() {
-        let svc = SMAppService.mainApp
-        do {
-            if svc.status == .enabled {
-                try svc.unregister()
-            } else {
-                try svc.register()
-            }
-        } catch {
-            // แสดง alert แทน log เพราะผู้ใช้ทีมไม่ได้เปิด Terminal
-            let alert = NSAlert()
-            alert.messageText = "Launch at Login"
-            alert.informativeText = svc.status == .notFound
-                ? "Move TeamRecorderBar.app to /Applications/ first, then try again."
-                : "Could not update Login Item:\n\(error.localizedDescription)"
-            alert.alertStyle = .warning
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
-        }
-        updateLaunchAtLoginItem()
+    @objc private func openSettingsWindow() {
+        popover.performClose(nil)
+        SettingsWindowController.shared.show()
     }
 
     // MARK: — Double-click feedback
@@ -927,90 +648,4 @@ class StatusBarController {
         }
     }
 
-    // MARK: — Calendar status helpers
-
-    fileprivate func calendarMenuTitle() -> String {
-        switch PermissionChecker.calendar() {
-        case .granted:      return "Calendar: OK"
-        case .denied:       return "Calendar: No Access ⚠"
-        case .undetermined: return "Calendar: Not Set Up ⚠"
-        case .skipped:      return "Calendar: Skipped"
-        }
-    }
-}
-
-// MARK: — NSMenuDelegate helper (probe icalBuddy on Permissions submenu open)
-// StatusBarController doesn't inherit NSObject, so delegate is a thin helper.
-
-private class CalendarsSubmenuDelegate: NSObject, NSMenuDelegate {
-
-    func menuWillOpen(_ menu: NSMenu) {
-        menu.removeAllItems()
-
-        guard PermissionChecker.calendar() == .granted else {
-            let item = NSMenuItem(title: "Grant Calendar access in Permissions…", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-            return
-        }
-
-        let calendars = CalendarEventBridge.shared.allCalendars()
-
-        guard !calendars.isEmpty else {
-            let item = NSMenuItem(title: "No calendars in Calendar.app", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-            return
-        }
-
-        let tracked = CalendarEventBridge.shared.trackedCalendarIds
-
-        if calendars.count >= 9 {
-            let resetItem = NSMenuItem(title: "Track All Calendars", action: #selector(resetToAll), keyEquivalent: "")
-            resetItem.target = self
-            resetItem.state = (tracked == nil) ? .on : .off
-            menu.addItem(resetItem)
-            menu.addItem(.separator())
-        }
-
-        for cal in calendars {
-            let item = NSMenuItem(title: cal.title, action: #selector(toggleCalendar(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = cal.calendarIdentifier
-            item.state = tracked?.contains(cal.calendarIdentifier) != false ? .on : .off
-            menu.addItem(item)
-        }
-    }
-
-    @objc private func resetToAll() {
-        CalendarEventBridge.shared.setTrackedCalendarIds(nil)
-    }
-
-    @objc private func toggleCalendar(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        let bridge = CalendarEventBridge.shared
-        let allIds = bridge.allCalendars().map(\.calendarIdentifier)
-        var current = bridge.trackedCalendarIds ?? allIds
-
-        if current.contains(id) {
-            current.removeAll { $0 == id }
-        } else {
-            current.append(id)
-            if current.count == allIds.count {
-                // All re-enabled — collapse back to "track all" (nil)
-                bridge.setTrackedCalendarIds(nil)
-                return
-            }
-        }
-        bridge.setTrackedCalendarIds(current)
-    }
-}
-
-private class PermSubmenuDelegate: NSObject, NSMenuDelegate {
-    weak var controller: StatusBarController?
-
-    func menuWillOpen(_ menu: NSMenu) {
-        guard let c = controller else { return }
-        c.calendarStatusItem.title = c.calendarMenuTitle()
-    }
 }

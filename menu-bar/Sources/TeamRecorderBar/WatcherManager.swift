@@ -297,8 +297,25 @@ class WatcherManager {
     // MARK: — Change recordings folder
 
     /// Update RECORDING_DIR in the App Support .env file and restart the watcher.
-    /// Writes atomically; preserves all other .env lines.
     func setRecordingDir(_ url: URL) {
+        setEnvValue("RECORDING_DIR", url.path)
+    }
+
+    /// Read one key from the App Support .env (nil when absent, empty or commented out).
+    func envValue(_ key: String) -> String? {
+        guard let content = try? String(contentsOf: WatcherManager.appSupportEnvFileURL, encoding: .utf8) else { return nil }
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(key + "=") else { continue }
+            let value = String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty || value.hasPrefix("#") ? nil : value
+        }
+        return nil
+    }
+
+    /// Set one key in the App Support .env (atomic write, other lines preserved) and
+    /// restart the watcher so Python re-reads it. Callers disable the control while recording.
+    func setEnvValue(_ key: String, _ value: String, restart: Bool = true) {
         let envFile = WatcherManager.appSupportEnvFileURL
         let tmpFile = envFile.deletingLastPathComponent().appendingPathComponent(".env.tmp")
 
@@ -306,10 +323,10 @@ class WatcherManager {
         var lines = (try? String(contentsOf: envFile, encoding: .utf8))?
             .components(separatedBy: .newlines) ?? []
 
-        let newLine = "RECORDING_DIR=\(url.path)"
+        let newLine = "\(key)=\(value)"
         var replaced = false
         lines = lines.map { line in
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("RECORDING_DIR=") {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix(key + "=") {
                 replaced = true
                 return newLine
             }
@@ -328,17 +345,40 @@ class WatcherManager {
             do {
                 try FileManager.default.moveItem(at: tmpFile, to: envFile)
             } catch {
-                NSLog("[TeamRecorderBar] setRecordingDir write failed: \(error)")
+                NSLog("[TeamRecorderBar] setEnvValue(\(key)) write failed: \(error)")
                 return
             }
         }
 
-        // Restart watcher so it picks up the new RECORDING_DIR
+        guard restart else { return }
         stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             self?.start()
         }
     }
+
+    /// Input devices from the bundled `recorder --list-devices` (CoreAudio only, no capture).
+    func listInputDevices() -> [(uid: String, name: String)] {
+        guard let bin = Bundle.main.url(forResource: "recorder", withExtension: nil) else { return [] }
+        let p = Process()
+        p.executableURL = bin
+        p.arguments = ["--list-devices"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return [] }
+        p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return out.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 1).map(String.init)
+            guard parts.count == 2, parts[1].contains("input") else { return nil }
+            let name = parts[1].replacingOccurrences(of: #" \[.*\]$"#, with: "", options: .regularExpression)
+            return (uid: parts[0], name: name)
+        }
+    }
+
+    /// PID of the running watcher for display (managed → PID file → pgrep).
+    func currentWatcherPid() -> pid_t? { watcherPid() }
 
     // MARK: — Recording directory (for "Open Recordings Folder")
 

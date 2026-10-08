@@ -45,6 +45,8 @@ private let kMixdownTrackGain: Double = 0.8
 private let kAppSupportDir = NSString(string: "~/Library/Application Support/Team Recorder").expandingTildeInPath
 private let kLevelsInterval: Double = 1
 private let kMicAliveWindow: Double = 2
+// RECORD_MIC=0 ใน .env (ส่งผ่าน environment จาก Python) = อัดเฉพาะเสียงระบบ ไม่เปิดไมค์เลย
+private let kRecordMic = ProcessInfo.processInfo.environment["RECORD_MIC"] != "0"
 // speechRatio (--mixdown): สัดส่วน frame 100ms ที่ RMS > -45 dBFS — app ใช้ตัดสินว่าไฟล์ "ว่าง"
 // -45 เลือกจาก calibrate 338 ไฟล์ (plan/phase3-speech-calibration.md): -40 ทำให้ meeting เสียงเบาดูเหมือนว่าง
 private let kSpeechFrameSeconds: Double = 0.1
@@ -385,7 +387,7 @@ final class RecorderEngine {
         startLevels()
 
         // Mic starts async on micQ — never blocks STARTED; silence fill covers it until it joins
-        micQ.async { [weak self] in self?.startMic() }
+        if kRecordMic { micQ.async { [weak self] in self?.startMic() } }
 
         // Start SCK (fatal if permission denied or display unavailable)
         do {
@@ -869,6 +871,7 @@ final class RecorderEngine {
                     "micRms":    dbfs(mic),
                     "micAlive":  alive,
                     "micDevice": selectedDeviceUID ?? "default",
+                    "micEnabled": kRecordMic,
                     "sysBuffers": bufs,
                     "sysDecoded": decoded,
                 ]
