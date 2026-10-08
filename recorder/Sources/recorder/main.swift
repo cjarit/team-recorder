@@ -47,6 +47,9 @@ private let kLevelsInterval: Double = 1
 private let kMicAliveWindow: Double = 2
 // RECORD_MIC=0 ใน .env (ส่งผ่าน environment จาก Python) = อัดเฉพาะเสียงระบบ ไม่เปิดไมค์เลย
 private let kRecordMic = ProcessInfo.processInfo.environment["RECORD_MIC"] != "0"
+// MIC_PATH=sck → ไมค์มาทาง ScreenCaptureKit (macOS 15+, out-of-process) แทน AVAudioEngine ที่ค้างตอนหูฟัง BT สลับโหมด
+// default ยังเป็น engine จนกว่า PoC B gate จะผ่าน (plan/v2.0-plan.md Phase 5)
+private let kMicPathSCK = ProcessInfo.processInfo.environment["MIC_PATH"] == "sck"
 // speechRatio (--mixdown): สัดส่วน frame 100ms ที่ RMS > -45 dBFS — app ใช้ตัดสินว่าไฟล์ "ว่าง"
 // -45 เลือกจาก calibrate 338 ไฟล์ (plan/phase3-speech-calibration.md): -40 ทำให้ meeting เสียงเบาดูเหมือนว่าง
 private let kSpeechFrameSeconds: Double = 0.1
@@ -93,6 +96,19 @@ private func withFloatSamples(_ sb: CMSampleBuffer, _ body: (UnsafePointer<Float
         any = true
     }
     return any
+}
+
+/// CMSampleBuffer → AVAudioPCMBuffer in the buffer's own format (handles chunked SCK data).
+private func pcmBuffer(from sb: CMSampleBuffer) -> AVAudioPCMBuffer? {
+    guard let fmtDesc = CMSampleBufferGetFormatDescription(sb),
+          let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc),
+          let avFmt = AVAudioFormat(streamDescription: asbdPtr) else { return nil }
+    let n = CMSampleBufferGetNumSamples(sb)
+    guard n > 0, let pcm = AVAudioPCMBuffer(pcmFormat: avFmt, frameCapacity: AVAudioFrameCount(n)) else { return nil }
+    pcm.frameLength = AVAudioFrameCount(n)
+    guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sb, at: 0, frameCount: Int32(n),
+                                                       into: pcm.mutableAudioBufferList) == noErr else { return nil }
+    return pcm
 }
 
 private func rms(_ p: UnsafePointer<Float>, _ n: Int) -> Float {
@@ -258,8 +274,11 @@ private class SCOutputDelegate: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream,
                 didOutputSampleBuffer buffer: CMSampleBuffer,
                 of type: SCStreamOutputType) {
-        guard type == .audio else { return }
-        engine.appendSystemAudio(buffer)
+        switch type {
+        case .audio:      engine.appendSystemAudio(buffer)
+        case .microphone: engine.appendMicSCK(buffer)
+        default:          break
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -323,6 +342,8 @@ final class RecorderEngine {
     private var lastMicBufferAt: Date?
     private var sysBuffers = 0
     private var sysDecoded = 0
+    private var micMaxGap: Double = 0
+    private var sckMicConverter: AVAudioConverter?
 
     private final class StopContext {
         let sema = DispatchSemaphore(value: 0)
@@ -387,7 +408,7 @@ final class RecorderEngine {
         startLevels()
 
         // Mic starts async on micQ — never blocks STARTED; silence fill covers it until it joins
-        if kRecordMic { micQ.async { [weak self] in self?.startMic() } }
+        if kRecordMic && !kMicPathSCK { micQ.async { [weak self] in self?.startMic() } }
 
         // Start SCK (fatal if permission denied or display unavailable)
         do {
@@ -487,6 +508,7 @@ final class RecorderEngine {
     }
 
     private func stopMic() {
+        sckMicConverter = nil
         if let obs = micConfigObserver {
             NotificationCenter.default.removeObserver(obs)
             micConfigObserver = nil
@@ -657,6 +679,10 @@ final class RecorderEngine {
         cfg.excludesCurrentProcessAudio = false
         cfg.sampleRate                  = Int(kSampleRate)
         cfg.channelCount                = kChannels
+        if kMicPathSCK && kRecordMic {
+            cfg.captureMicrophone         = true
+            cfg.microphoneCaptureDeviceID = selectedDeviceUID
+        }
         // Video config — minimal overhead; we only use the audio output type
         cfg.width                       = 2
         cfg.height                      = 2
@@ -671,6 +697,10 @@ final class RecorderEngine {
         // ใช้ try (ไม่ใช่ try?) เพื่อ propagate error ขึ้นไปให้ caller rollback ได้
         try stream.addStreamOutput(sckDelegate, type: .audio,
                                    sampleHandlerQueue: writeQ)
+        if kMicPathSCK && kRecordMic {
+            try stream.addStreamOutput(sckDelegate, type: .microphone,
+                                       sampleHandlerQueue: writeQ)
+        }
 
         // ─ 3. Start capture ────────────────────────────────────────────────────
         var captureError: Error?
@@ -837,6 +867,43 @@ final class RecorderEngine {
         fillMicSilence()
     }
 
+    // Called from SCOutputDelegate on writeQ (MIC_PATH=sck) — same track, same clock as the engine path
+    func appendMicSCK(_ buffer: CMSampleBuffer) {
+        let now = Date()
+        if let last = lastMicBufferAt { micMaxGap = max(micMaxGap, now.timeIntervalSince(last)) }
+        lastMicBufferAt = now
+        guard isRecording, let track = micTrack, track.isReadyForMoreMediaData else { return }
+        let n = CMSampleBufferGetNumSamples(buffer)
+        guard n > 0, let fmtDesc = CMSampleBufferGetFormatDescription(buffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmtDesc)?.pointee else { return }
+
+        if asbd.mSampleRate == kSampleRate && Int(asbd.mChannelsPerFrame) == kChannels {
+            withFloatSamples(buffer) { p, len in micPeakRms = max(micPeakRms, rms(p, len)) }
+            let pts = CMTime(value: micSamples, timescale: CMTimeScale(kSampleRate))
+            micSamples += Int64(n)
+            if let stamped = restamp(buffer, pts: pts) { track.append(stamped) }
+            return
+        }
+        guard let src = pcmBuffer(from: buffer) else { return }
+        if sckMicConverter == nil { sckMicConverter = AVAudioConverter(from: src.format, to: targetMicFmt) }
+        guard let converter = sckMicConverter else { return }
+        let capacity = AVAudioFrameCount(Double(src.frameLength) * (kSampleRate / src.format.sampleRate)) + 16
+        guard let converted = AVAudioPCMBuffer(pcmFormat: targetMicFmt, frameCapacity: capacity) else { return }
+        var consumed = false
+        var convErr: NSError?
+        converter.convert(to: converted, error: &convErr) { _, status in
+            guard !consumed else { status.pointee = .noDataNow; return nil }
+            consumed = true
+            status.pointee = .haveData
+            return src
+        }
+        guard convErr == nil, converted.frameLength > 0 else { return }
+        if let ch = converted.floatChannelData { micPeakRms = max(micPeakRms, rms(ch[0], Int(converted.frameLength))) }
+        let pts = CMTime(value: micSamples, timescale: CMTimeScale(kSampleRate))
+        micSamples += Int64(converted.frameLength)
+        if let sb = makeSampleBuffer(from: converted, pts: pts) { track.append(sb) }
+    }
+
     // MARK: – Live levels (levels.json)
 
     private func startLevels() {
@@ -858,11 +925,12 @@ final class RecorderEngine {
         writeQ.async { [weak self] in
             guard let self, self.isRecording else { return }
             let sys = self.sysPeakRms, mic = self.micPeakRms, micAt = self.lastMicBufferAt
-            let bufs = self.sysBuffers, decoded = self.sysDecoded
+            let bufs = self.sysBuffers, decoded = self.sysDecoded, gap = self.micMaxGap
             self.sysPeakRms = 0
             self.micPeakRms = 0
             self.sysBuffers = 0
             self.sysDecoded = 0
+            self.micMaxGap = 0
             self.levelsQ.async {
                 let alive = micAt.map { Date().timeIntervalSince($0) < kMicAliveWindow } ?? false
                 let payload: [String: Any] = [
@@ -872,6 +940,8 @@ final class RecorderEngine {
                     "micAlive":  alive,
                     "micDevice": selectedDeviceUID ?? "default",
                     "micEnabled": kRecordMic,
+                    "micPath":    kMicPathSCK ? "sck" : "engine",
+                    "micMaxGap":  (gap * 1000).rounded() / 1000,
                     "sysBuffers": bufs,
                     "sysDecoded": decoded,
                 ]
