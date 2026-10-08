@@ -16,7 +16,7 @@
 | **watcher.pyz** | Zipapp bundle (Phase 4): `teams_recorder_v2.py` + dotenv + psutil wheels, runnable by system Python 3 |
 | **UDP meeting threshold** | `UDP_MEET_THRESH = 4` — number of established UDP connections that indicates a Teams meeting is active (vs background Teams idle = 1-2) |
 | **STOP_GRACE** | 8 seconds Python waits after UDP drops before confirming meeting ended — prevents false stops |
-| **ad-hoc signing** | `codesign -s -` — self-signed with no Apple Developer ID. Requires right-click → Open on first launch. |
-| **Gatekeeper bypass** | macOS security prompt on first open of an ad-hoc signed .app. Right-click → Open → confirm. One-time only. |
+| **Team Recorder Signing** | Self-signed code-signing certificate used for every build since v2.0 (`make cert`); gives a stable designated requirement so TCC grants survive upgrades. v1.2.x used ad-hoc signing (`codesign -s -`), which reset permissions on every reinstall. |
+| **Gatekeeper bypass** | macOS blocks the first open of a non-notarized .app. macOS 15+: System Settings → Privacy & Security → Open Anyway. One-time only. |
 | **SMAppService** | macOS 13.2+ API for registering a Login Item (Launch at Login). Used by TeamRecorderBar. |
 | **TCC** | Transparency, Consent, and Control — macOS privacy permission system. Each app's permissions are tied to its bundle ID. |

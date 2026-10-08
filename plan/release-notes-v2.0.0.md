@@ -25,8 +25,8 @@ macOS will ask for the three permissions **one more time**, because the signing 
 ## SHA256
 
 ```
-c4c03e6c102b12f556c1d39b75a12bcd188a1d06ab052382033a27f8d9b814db  TeamRecorderBar-v2.0.0.dmg
-caad6bfe7316d271b179b50089308ae9ce8a17fdd6fad58fa1f6f8bde1452ac7  TeamRecorderBar-v2.0.0.zip
+e295f8a13b56b892c0b996543063fd11b120852fc5f68872f2e18ad03daeebf4  TeamRecorderBar-v2.0.0.dmg
+35a031e6d2fb6283645d83e9a626fe8bc4c4b003e5500d232a3079dc565d0f48  TeamRecorderBar-v2.0.0.zip
 ```
 
 ## What's new in v2.0.0

@@ -50,22 +50,25 @@ struct PopoverView: View {
             sectionLabel("Last Recording")
             lastRecordingRow
             Divider().padding(.vertical, 4)
-            sectionLabel("Permissions")
-            permissionRow("Screen Recording", snapshot.screenRecording, .screenRecording)
-            permissionRow("Microphone", snapshot.microphone, .microphone)
-            permissionRow("Calendar", snapshot.calendar, .calendar)
-            Divider().padding(.vertical, 4)
+            if permissionsNeedAttention {
+                sectionLabel("Permissions")
+                permissionRow("Screen Recording", snapshot.screenRecording, .screenRecording)
+                permissionRow("Microphone", snapshot.microphone, .microphone)
+                permissionRow("Calendar", snapshot.calendar, .calendar)
+                Divider().padding(.vertical, 4)
+            }
             MenuRow(action: actions.openFolder) { Text("Open Recordings Folder") }
             MenuRow(action: actions.openWindow) { Text("Open Team Recorder…") }
-            MenuRow(action: actions.quit) {
-                Text("Quit Team Recorder")
-                Spacer()
-                Text("⌘Q").foregroundStyle(.secondary)
-            }
+            MenuRow(action: actions.quit) { Text("Quit Team Recorder") }
         }
         .padding(6)
         .frame(width: 300)
         .font(.system(size: 13))
+    }
+
+    private var permissionsNeedAttention: Bool {
+        [snapshot.screenRecording, snapshot.microphone].contains { $0 != .granted }
+            || !(snapshot.calendar == .granted || snapshot.calendar == .skipped)
     }
 
     @ViewBuilder
