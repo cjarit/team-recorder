@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // but setting it here ensures it works even if the plist is absent during dev.
         NSApp.setActivationPolicy(.accessory)
         configureNotifications()
+        PermissionChecker.writeSnapshot()
 
         statusBarController = StatusBarController()
 

@@ -83,3 +83,8 @@ _backup/
 # Local presentation / slide assets
 # ────────────────────────────────────────────
 slide-assets/
+
+# signing material — never commit
+*.p12
+*.pem
+*.key

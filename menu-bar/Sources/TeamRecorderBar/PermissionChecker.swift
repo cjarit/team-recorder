@@ -10,6 +10,27 @@ enum PermissionStatus { case granted, denied, undetermined }
 /// All request functions call back on the main thread.
 struct PermissionChecker {
 
+    // MARK: — Snapshot file (read by the Phase 1 TCC gate and the Status tab)
+
+    static var snapshotFileURL: URL {
+        RecorderStatus.statusFileURL.deletingLastPathComponent().appendingPathComponent("permissions.json")
+    }
+
+    /// Writes the current (non-prompting) permission state next to status.json.
+    static func writeSnapshot() {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let payload: [String: Any] = [
+            "screenRecording": String(describing: screenRecording()),
+            "microphone":      String(describing: microphone()),
+            "calendar":        String(describing: calendar()),
+            "version":         version,
+            "ts":              DateFormatter.teamRecorderStatus.string(from: Date()),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? FileManager.default.createDirectory(at: snapshotFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: snapshotFileURL, options: .atomic)
+    }
+
     // MARK: — Synchronous checks (safe on any thread)
 
     /// Screen Recording status via CGPreflightScreenCaptureAccess().

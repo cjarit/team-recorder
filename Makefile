@@ -3,9 +3,11 @@ PYTHON      := $(if $(wildcard $(BREW_PYTHON)),$(BREW_PYTHON),python3)
 MENU_BAR_APP = menu-bar/.build/TeamRecorderBar.app
 DIST_DIR     = dist
 VERSION      = 2.0.0-dev
+# identity คงที่สำหรับ sign ทุก build (make cert สร้างครั้งเดียว) — ใช้ SIGN_ID=- เพื่อ ad-hoc (ทดสอบเท่านั้น)
+SIGN_ID     ?= Team Recorder Signing
 RELEASE_ZIP  = $(DIST_DIR)/TeamRecorderBar-v$(VERSION).zip
 
-.PHONY: run test setup build-recorder doctor permissions stop index watcher-pyz menu-bar menu-bar-install release icon reset-setup uninstall clean-reinstall
+.PHONY: run test setup build-recorder doctor permissions stop index watcher-pyz menu-bar menu-bar-install release icon reset-setup uninstall clean-reinstall cert cert-check
 
 run:
 	$(PYTHON) teams_recorder_v2.py
@@ -28,10 +30,18 @@ stop:
 index:
 	@$(PYTHON) teams_recorder_v2.py --index
 
-build-recorder:
+cert:
+	@bash scripts/make-cert.sh "$(SIGN_ID)"
+
+cert-check:
+	@if [ "$(SIGN_ID)" = "-" ]; then echo "  ⚠  SIGN_ID=- (ad-hoc) — test builds only"; \
+	elif security find-identity -v -p codesigning | grep -qF "$(SIGN_ID)"; then echo "  ✓  signing identity: $(SIGN_ID)"; \
+	else echo "  ✗  signing identity '$(SIGN_ID)' not found — run: make cert"; exit 1; fi
+
+build-recorder: cert-check
 	cd recorder && swift build -c release
 	cp recorder/.build/release/recorder recorder/recorder
-	codesign -s - --force \
+	codesign -s "$(SIGN_ID)" --force \
 	    --entitlements recorder/entitlements.plist \
 	    recorder/recorder
 	@echo "  ✓  recorder ($$(uname -m)) — done"
@@ -48,7 +58,7 @@ watcher-pyz:
 	@rm -rf /tmp/watcher-pyz-build
 	@echo "  ✓  watcher.pyz ($$(du -sh watcher.pyz | cut -f1))"
 
-menu-bar: icon watcher-pyz
+menu-bar: cert-check icon watcher-pyz
 	@echo "  ⏳  Building TeamRecorderBar... (ครั้งแรกอาจใช้เวลา ~1 นาที)"
 	@echo "     กำลัง compile Swift app..."
 	@cd menu-bar && swift build -c release
@@ -64,11 +74,11 @@ menu-bar: icon watcher-pyz
 	@cp watcher.pyz "$(MENU_BAR_APP)/Contents/Resources/"
 	@cp recorder/recorder "$(MENU_BAR_APP)/Contents/Resources/"
 	@cp .env.example "$(MENU_BAR_APP)/Contents/Resources/"
-	@codesign -s - --force \
+	@codesign -s "$(SIGN_ID)" --force \
 	    --entitlements recorder/entitlements.plist \
 	    "$(MENU_BAR_APP)/Contents/Resources/recorder"
-	@codesign -s - --force "$(MENU_BAR_APP)"
-	@echo "  ✓  TeamRecorderBar.app ($$(uname -m)) → $(MENU_BAR_APP)"
+	@codesign -s "$(SIGN_ID)" --force "$(MENU_BAR_APP)"
+	@echo "  ✓  TeamRecorderBar.app ($$(uname -m), signed: $(SIGN_ID)) → $(MENU_BAR_APP)"
 
 menu-bar-install: menu-bar
 	@echo "  ⏳  Installing TeamRecorderBar.app..."
