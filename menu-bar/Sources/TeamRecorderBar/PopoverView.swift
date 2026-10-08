@@ -17,6 +17,7 @@ struct PopoverSnapshot {
     var screenRecording: PermissionStatus
     var microphone: PermissionStatus
     var calendar: PermissionStatus
+    var levels: RecorderLevels?
 }
 
 enum PermissionPane: String {
@@ -85,6 +86,8 @@ struct PopoverView: View {
                 Text(snapshot.meetingName ?? "Teams Meeting")
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(2)
+                LevelMeters(levels: snapshot.levels)
+                    .padding(.top, 2)
                 Button(action: actions.stopRecording) {
                     Text("Stop Recording").frame(maxWidth: .infinity)
                 }
@@ -215,6 +218,39 @@ struct PopoverView: View {
     }
 }
 
+/// Two live level bars from levels.json. Stale or missing data renders as "no data", never frozen bars.
+private struct LevelMeters: View {
+    let levels: RecorderLevels?
+
+    private func fraction(_ db: Double) -> Double { min(max((db + 60) / 60, 0), 1) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let levels, !levels.isStale {
+                meter("Others", value: fraction(levels.sysRms), note: nil)
+                meter("My mic",
+                      value: levels.micAlive ? fraction(levels.micRms) : 0,
+                      note: levels.micAlive ? nil : "not captured")
+            } else {
+                meter("Others", value: 0, note: "no data")
+                meter("My mic", value: 0, note: "no data")
+            }
+        }
+        .font(.system(size: 11))
+    }
+
+    private func meter(_ label: String, value: Double, note: String?) -> some View {
+        HStack(spacing: 8) {
+            Text(label).foregroundStyle(.secondary).frame(width: 46, alignment: .leading)
+            ProgressView(value: value).progressViewStyle(.linear)
+            if let note {
+                Text(note).foregroundStyle(note == "no data" ? Color.secondary : Color.orange)
+                    .frame(width: 74, alignment: .trailing)
+            }
+        }
+    }
+}
+
 private struct StatusDot: View {
     let color: Color
     var body: some View {
@@ -230,12 +266,15 @@ private struct WarningCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label(title, systemImage: "exclamationmark.triangle.fill")
-                .fontWeight(.semibold)
-                .foregroundStyle(.orange)
+            Label {
+                Text(title).fontWeight(.semibold).foregroundStyle(.primary)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
             Text(message)
                 .fixedSize(horizontal: false, vertical: true)
             Button(buttonTitle, action: action)
+                .buttonStyle(.borderedProminent)
                 .padding(.top, 2)
         }
         .padding(10)

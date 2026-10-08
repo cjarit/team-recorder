@@ -127,3 +127,55 @@ Signature size=1680 Authority=Team Recorder Signing
 }
 ```
 
+## Phase 3 build (levels + speech meta) — 2026-10-08 15:51
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:51:50",
+  "version" : "2.0.0-dev"
+}
+```
+
+## Phase 3 build 2 (sys buffer counters) — 2026-10-08 15:57
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:57:13",
+  "version" : "2.0.0-dev"
+}
+```
+
+## Phase 3 build 3 (format diag) — 2026-10-08 15:58
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:58:50",
+  "version" : "2.0.0-dev"
+}
+```
+
+## Phase 3 build 4 (ABL size query) — 2026-10-08 15:59
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:59:48",
+  "version" : "2.0.0-dev"
+}
+```
+

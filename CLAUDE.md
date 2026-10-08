@@ -118,6 +118,17 @@ Exit code 3 after a completed stop (file already finalized) signals a planned re
 
 **`title` MUST go through the stdin of the already-recording process, never a second spawned `recorder --meeting-title` process** — a second process is a different ScreenCaptureKit client and interrupts the first one's SCStream. Confirmed by testing (v1.2.2): the already-recording process logged `SCStream stopped: application connection being interrupted` the moment a second process ran `--meeting-title` concurrently, with a clean control run when it didn't. `get_meeting_title_from_screen(proc)` in `teams_recorder_v2.py` sends `"title\n"` to the same `proc` used for `start`/`stop` for exactly this reason. The command is synchronous like `start`/`stop` — Python must read the `TITLE`/`TITLE_NONE` response before sending anything else; the single-threaded stdin read loop enforces this anyway. `title` can block for a few seconds (internal retry, see `captureMeetingTitle()` below) — this delays the next command Python sends (e.g. `stop`), never the actual audio pipeline.
 
+### Sidecar files (v2.0) — recorder → app, Python untouched
+
+| File | Writer | Reader | Content |
+|------|--------|--------|---------|
+| `APP_SUPPORT_DIR/levels.json` | recorder, every 1 s while recording (`levelsQ`; accumulators on `writeQ`); deleted on stop | app popover meters + mic-silent alert | `{"ts","sysRms","micRms"` (dBFS, peak RMS of the last second, −120 = silence)`,"micAlive"` (mic buffer within 2 s)`,"micDevice","sysBuffers","sysDecoded"}` — app treats `ts` older than 3 s as "no data" |
+| `<recording>.m4a.meta.json` | `recorder --mixdown`, after the in-place replace succeeds | app (`scheduleSpeechCheck`, polls 2 s × 45) | `{"speechRatio","durationSec","mixedAt"}` — `speechRatio` = share of 100 ms frames whose RMS > `kSpeechFrameRms` on the 0.8/0.8 mixed signal; identical algorithm in `scripts/speech_ratio.py` (verified 0.2653 vs 0.2650 on a known file) |
+
+**Empty/ rule (app, `StatusBarController.speechMinRatio`):** a saved recording with `speechRatio` below the threshold **and** `durationSec ≥ 180` is moved to `<RECORDING_DIR>/Empty/` with its meta file and one notification. Files are never deleted. Short calls (< `MIN_DURATION`) keep the "Teams Call (Short)" rule and are never moved. Threshold calibration: `plan/phase3-speech-calibration.md`.
+
+**Reading SCK audio samples:** SCK delivers mono float32 as several `AudioBuffer` chunks per sample buffer; `withFloatSamples()` must query `bufferListSizeNeededOut` first and iterate every buffer — a fixed 1–2 buffer list fails with `kCMSampleBufferError_ArrayTooSmall` (−12737), which read as "silence" for one test round on 2026-10-08.
+
 ### recorder binary CLI modes
 
 ```bash
@@ -132,7 +143,8 @@ recorder --meeting-title       # standalone/manual testing ONLY (make doctor, ad
                                 # see stdin/stdout protocol section above. Production path is
                                 # the "title" stdin command sent to the recording process itself.
 recorder --mixdown <file>     # merge dual-track recording into single mono AAC track in place
-                                # (NotebookLM reads only first track); original kept if validation fails
+                                # (NotebookLM reads only first track); original kept if validation fails;
+                                # writes <file>.meta.json with speechRatio (see Sidecar files)
 ```
 
 ### Error tokens (stderr)

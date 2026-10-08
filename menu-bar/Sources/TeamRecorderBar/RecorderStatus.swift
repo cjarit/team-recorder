@@ -41,6 +41,43 @@ struct RecorderStatus: Codable {
     }
 }
 
+/// Mirrors levels.json written by the recorder once per second while recording.
+struct RecorderLevels: Codable {
+    static let staleAfterSeconds: TimeInterval = 3
+
+    var ts: String
+    var sysRms: Double
+    var micRms: Double
+    var micAlive: Bool
+    var micDevice: String?
+
+    static var fileURL: URL {
+        RecorderStatus.statusFileURL.deletingLastPathComponent().appendingPathComponent("levels.json")
+    }
+
+    static func load() -> RecorderLevels? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(RecorderLevels.self, from: data)
+    }
+
+    var isStale: Bool {
+        guard let date = DateFormatter.teamRecorderStatus.date(from: ts) else { return true }
+        return Date().timeIntervalSince(date) > Self.staleAfterSeconds
+    }
+}
+
+/// Mirrors <recording>.meta.json written by `recorder --mixdown` after a recording is saved.
+struct RecordingMeta: Codable {
+    var speechRatio: Double
+    var durationSec: Double
+    var mixedAt: String
+
+    static func load(forRecording path: String) -> RecordingMeta? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path + ".meta.json")) else { return nil }
+        return try? JSONDecoder().decode(RecordingMeta.self, from: data)
+    }
+}
+
 extension DateFormatter {
     static let teamRecorderStatus: DateFormatter = {
         let f = DateFormatter()

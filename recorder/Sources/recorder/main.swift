@@ -41,6 +41,62 @@ private let kExitTeardownHung: Int32 = 3
 private let kMicMaxLag: Double = 1
 // gain ต่อ track ตอนรวมเป็น track เดียว (--mixdown)
 private let kMixdownTrackGain: Double = 0.8
+// levels.json — ระดับเสียงสดให้ menu bar app แสดง meter (ต้องตรงกับ APP_SUPPORT_DIR ใน teams_recorder_v2.py)
+private let kAppSupportDir = NSString(string: "~/Library/Application Support/Team Recorder").expandingTildeInPath
+private let kLevelsInterval: Double = 1
+private let kMicAliveWindow: Double = 2
+// speechRatio (--mixdown): สัดส่วน frame 100ms ที่ RMS > -40 dBFS — app ใช้ตัดสินว่าไฟล์ "ว่าง"
+private let kSpeechFrameSeconds: Double = 0.1
+private let kSpeechFrameRms: Float = 0.01
+
+private let levelsTimeFmt: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+    return f
+}()
+
+private func dbfs(_ rms: Float) -> Double {
+    rms > 0 ? (Double(20 * log10(rms)) * 10).rounded() / 10 : -120
+}
+
+/// Calls body for each float32 chunk of an LPCM sample buffer (all buffers in the list — SCK
+/// delivers mono as several chunks). Returns false when the buffer is not float32 LPCM.
+@discardableResult
+private func withFloatSamples(_ sb: CMSampleBuffer, _ body: (UnsafePointer<Float>, Int) -> Void) -> Bool {
+    guard let fmt = CMSampleBufferGetFormatDescription(sb),
+          let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt)?.pointee,
+          asbd.mFormatID == kAudioFormatLinearPCM,
+          asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+          asbd.mBitsPerChannel == 32 else { return false }
+    var needed = 0
+    guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+        sb, bufferListSizeNeededOut: &needed, bufferListOut: nil, bufferListSize: 0,
+        blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
+        blockBufferOut: nil) == noErr, needed > 0 else { return false }
+    let raw = UnsafeMutableRawPointer.allocate(byteCount: needed, alignment: MemoryLayout<AudioBufferList>.alignment)
+    defer { raw.deallocate() }
+    let ablPtr = raw.bindMemory(to: AudioBufferList.self, capacity: 1)
+    var block: CMBlockBuffer?
+    guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+        sb, bufferListSizeNeededOut: nil, bufferListOut: ablPtr, bufferListSize: needed,
+        blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
+        flags: 0, blockBufferOut: &block) == noErr else { return false }
+    var any = false
+    for buf in UnsafeMutableAudioBufferListPointer(ablPtr) {
+        let n = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+        guard n > 0, let data = buf.mData else { continue }
+        body(data.assumingMemoryBound(to: Float.self), n)
+        any = true
+    }
+    return any
+}
+
+private func rms(_ p: UnsafePointer<Float>, _ n: Int) -> Float {
+    var acc: Float = 0
+    for i in 0..<n { acc += p[i] * p[i] }
+    return (acc / Float(n)).squareRoot()
+}
 
 private func aacOutputSettings() -> [String: Any] {
     [AVFormatIDKey:          kAudioFormatMPEG4AAC,
@@ -256,6 +312,15 @@ final class RecorderEngine {
     private var sysSamples: Int64 = 0
     private var micSamples: Int64 = 0
 
+    // Live levels (levels.json) — accumulators touched on writeQ only; file written on levelsQ
+    private let levelsQ = DispatchQueue(label: "io.teams-recorder.levels", qos: .utility)
+    private var levelsTimer: DispatchSourceTimer?
+    private var sysPeakRms: Float = 0
+    private var micPeakRms: Float = 0
+    private var lastMicBufferAt: Date?
+    private var sysBuffers = 0
+    private var sysDecoded = 0
+
     private final class StopContext {
         let sema = DispatchSemaphore(value: 0)
         let lock = NSLock()
@@ -316,6 +381,7 @@ final class RecorderEngine {
         sysSamples = 0
         micSamples = 0
         isRecording = true
+        startLevels()
 
         // Mic starts async on micQ — never blocks STARTED; silence fill covers it until it joins
         micQ.async { [weak self] in self?.startMic() }
@@ -327,6 +393,7 @@ final class RecorderEngine {
             // ── Rollback: SCK failed → undo everything so the session is clean ──
             // ถ้า SCK ล้มเหลว ต้อง rollback state ทั้งหมดก่อน throw ต่อ
             isRecording = false
+            stopLevels()
             micQ.async { [weak self] in self?.stopMic() }
             let failedWriter = writer; writer = nil
             sysTrack = nil; micTrack = nil
@@ -343,6 +410,7 @@ final class RecorderEngine {
     func stop() {
         guard isRecording else { return }
         isRecording = false
+        stopLevels()
         // ปิดไฟล์ก่อนปิดไมค์/SCK — 2026-09-28 stopMic() ค้างตอนหูฟัง BT สลับ แล้วไฟล์ไม่ได้ปิดเลย
         // Short grace so any in-flight buffers on writeQ can land
         let context = StopContext()
@@ -512,6 +580,10 @@ final class RecorderEngine {
             let pts = CMTime(value: self.micSamples,
                              timescale: CMTimeScale(kSampleRate))
             self.micSamples += Int64(frameLength)
+            if let ch = converted.floatChannelData {
+                self.micPeakRms = max(self.micPeakRms, rms(ch[0], Int(frameLength)))
+            }
+            self.lastMicBufferAt = Date()
             if let sb = makeSampleBuffer(from: converted, pts: pts) {
                 track.append(sb)
             }
@@ -757,7 +829,55 @@ final class RecorderEngine {
         if let stamped = restamp(buffer, pts: pts) {
             track.append(stamped)
         }
+        sysBuffers += 1
+        if withFloatSamples(buffer, { p, n in sysPeakRms = max(sysPeakRms, rms(p, n)) }) { sysDecoded += 1 }
         fillMicSilence()
+    }
+
+    // MARK: – Live levels (levels.json)
+
+    private func startLevels() {
+        sysPeakRms = 0; micPeakRms = 0; lastMicBufferAt = nil
+        let t = DispatchSource.makeTimerSource(queue: levelsQ)
+        t.schedule(deadline: .now() + kLevelsInterval, repeating: kLevelsInterval)
+        t.setEventHandler { [weak self] in self?.writeLevels() }
+        t.resume()
+        levelsTimer = t
+    }
+
+    private func stopLevels() {
+        levelsTimer?.cancel()
+        levelsTimer = nil
+        try? FileManager.default.removeItem(atPath: kAppSupportDir + "/levels.json")
+    }
+
+    private func writeLevels() {
+        writeQ.async { [weak self] in
+            guard let self, self.isRecording else { return }
+            let sys = self.sysPeakRms, mic = self.micPeakRms, micAt = self.lastMicBufferAt
+            let bufs = self.sysBuffers, decoded = self.sysDecoded
+            self.sysPeakRms = 0
+            self.micPeakRms = 0
+            self.sysBuffers = 0
+            self.sysDecoded = 0
+            self.levelsQ.async {
+                let alive = micAt.map { Date().timeIntervalSince($0) < kMicAliveWindow } ?? false
+                let payload: [String: Any] = [
+                    "ts":        levelsTimeFmt.string(from: Date()),
+                    "sysRms":    dbfs(sys),
+                    "micRms":    dbfs(mic),
+                    "micAlive":  alive,
+                    "micDevice": selectedDeviceUID ?? "default",
+                    "sysBuffers": bufs,
+                    "sysDecoded": decoded,
+                ]
+                guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+                let url = URL(fileURLWithPath: kAppSupportDir + "/levels.json")
+                try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                         withIntermediateDirectories: true)
+                try? data.write(to: url, options: .atomic)
+            }
+        }
     }
 
     /// Keeps the mic track within kMicMaxLag of the system-audio clock by appending
@@ -1314,7 +1434,22 @@ func runMixdown(path: String) -> Int32 {
             throw reader.error ?? writer.error ?? failure("could not start")
         }
         writer.startSession(atSourceTime: .zero)
+        // speechRatio — นับ frame 100ms ที่ดังกว่า -40 dBFS บนสัญญาณที่รวมแล้ว (สูตรเดียวกับ scripts/speech_ratio.py)
+        let frameLen = Int(kSampleRate * kSpeechFrameSeconds)
+        var frameSumSq: Double = 0, frameCount = 0, loudFrames = 0, totalFrames = 0
         while let sb = output.copyNextSampleBuffer() {
+            withFloatSamples(sb) { p, n in
+                for i in 0..<n {
+                    frameSumSq += Double(p[i] * p[i])
+                    frameCount += 1
+                    if frameCount == frameLen {
+                        if (frameSumSq / Double(frameLen)).squareRoot() > Double(kSpeechFrameRms) { loudFrames += 1 }
+                        totalFrames += 1
+                        frameSumSq = 0
+                        frameCount = 0
+                    }
+                }
+            }
             while !input.isReadyForMoreMediaData { usleep(2_000) }
             guard input.append(sb) else { throw writer.error ?? failure("append failed") }
         }
@@ -1334,6 +1469,14 @@ func runMixdown(path: String) -> Int32 {
             throw failure("duration mismatch \(mixedDuration.seconds) vs \(srcDuration.seconds)")
         }
         _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        let meta: [String: Any] = [
+            "speechRatio": totalFrames > 0 ? Double(loudFrames) / Double(totalFrames) : 0,
+            "durationSec": srcDuration.seconds,
+            "mixedAt":     levelsTimeFmt.string(from: Date()),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: meta) {
+            try? data.write(to: URL(fileURLWithPath: path + ".meta.json"), options: .atomic)
+        }
         return 0
     } catch {
         try? FileManager.default.removeItem(at: tmp)

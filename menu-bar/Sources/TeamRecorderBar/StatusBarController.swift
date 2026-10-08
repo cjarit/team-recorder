@@ -35,6 +35,19 @@ class StatusBarController {
     private var currentStatus: RecorderStatus?
     private var lastNotifiedRecordingPath: String?
 
+    // Live levels: 1 s refresh while the popover is open and a recording is running
+    private var levelsTimer: Timer?
+    // Mic-silent alert: once per recording (keyed by recordingPath)
+    private var micSilentSince: Date?
+    private var micSilentAlertedPath: String?
+    private static let micSilentAlertSeconds: TimeInterval = 60
+    // Post-recording speech check (meta.json from recorder --mixdown)
+    private var speechCheckTimers: [String: Timer] = [:]
+    static let speechMinRatio = 0.05
+    // ไฟล์สั้นกว่า MIN_DURATION (teams_recorder_v2.py) ใช้กฎ "Teams Call (Short)" เดิม ไม่ย้ายไป Empty
+    private static let shortCallSeconds = 180.0
+    private static let speechCheckTries = 45
+
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         buildMenu()
@@ -282,6 +295,11 @@ class StatusBarController {
         // LSUIElement app — activate so the transient popover closes on an outside click
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        levelsTimer?.invalidate()
+        levelsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
+            guard let self, self.popover.isShown else { t.invalidate(); return }
+            if self.currentStatus?.state == "recording" { self.updatePopover() }
+        }
     }
 
     private func showFullMenu() {
@@ -349,7 +367,8 @@ class StatusBarController {
             canOpenLastRecording: s?.lastRecordingPath != nil,
             screenRecording: PermissionChecker.screenRecording(),
             microphone: PermissionChecker.microphone(),
-            calendar: PermissionChecker.calendar()
+            calendar: PermissionChecker.calendar(),
+            levels: s?.state == "recording" ? RecorderLevels.load() : nil
         )
     }
 
@@ -509,6 +528,69 @@ class StatusBarController {
         updateIcon()
         updatePopover()
         notifyIfRecordingSaved(previous: previousStatus, current: currentStatus)
+        checkMicSilent()
+    }
+
+    // MARK: — Mic-silent alert (levels.json)
+
+    /// One notification per recording when the recorder reports no mic buffers for 60 s.
+    private func checkMicSilent() {
+        guard let s = currentStatus, s.state == "recording", let path = s.recordingPath else {
+            micSilentSince = nil
+            return
+        }
+        guard let levels = RecorderLevels.load(), !levels.isStale else { return }
+        if levels.micAlive {
+            micSilentSince = nil
+            return
+        }
+        let since = micSilentSince ?? Date()
+        micSilentSince = since
+        guard Date().timeIntervalSince(since) >= Self.micSilentAlertSeconds,
+              micSilentAlertedPath != path else { return }
+        micSilentAlertedPath = path
+        sendNotification(body: "Your mic isn't being captured — others' voices are still recorded",
+                         filePath: nil)
+    }
+
+    // MARK: — Post-recording speech check (Empty/)
+
+    /// recorder --mixdown runs detached after the file is saved; poll for its meta.json
+    /// and move speechless files to Empty/. Files are never deleted.
+    private func scheduleSpeechCheck(path: String) {
+        speechCheckTimers[path]?.invalidate()
+        var tries = 0
+        speechCheckTimers[path] = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
+            tries += 1
+            guard let self else { t.invalidate(); return }
+            if let meta = RecordingMeta.load(forRecording: path) {
+                t.invalidate()
+                self.speechCheckTimers[path] = nil
+                if meta.speechRatio < Self.speechMinRatio && meta.durationSec >= Self.shortCallSeconds {
+                    self.moveToEmpty(path: path, ratio: meta.speechRatio)
+                }
+            } else if tries >= Self.speechCheckTries {
+                t.invalidate()
+                self.speechCheckTimers[path] = nil
+            }
+        }
+    }
+
+    private func moveToEmpty(path: String, ratio: Double) {
+        let src = URL(fileURLWithPath: path)
+        let dir = src.deletingLastPathComponent().appendingPathComponent("Empty", isDirectory: true)
+        let dst = dir.appendingPathComponent(src.lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: src, to: dst)
+            try? FileManager.default.moveItem(at: URL(fileURLWithPath: path + ".meta.json"),
+                                              to: URL(fileURLWithPath: dst.path + ".meta.json"))
+            NSLog("[TeamRecorderBar] no speech (ratio %.3f) — moved to Empty: %@", ratio, src.lastPathComponent)
+            sendNotification(body: "No speech detected — moved to Empty: \(src.lastPathComponent)",
+                             filePath: dst.path)
+        } catch {
+            NSLog("[TeamRecorderBar] could not move to Empty: \(error)")
+        }
     }
 
     // MARK: — Menu updates
@@ -754,15 +836,20 @@ class StatusBarController {
         if previous?.state == "recording" || previous?.state == "stopping" {
             lastNotifiedRecordingPath = path
             sendSavedNotification(path: path, name: current.lastRecordingName)
+            scheduleSpeechCheck(path: path)
         }
     }
 
     private func sendSavedNotification(path: String, name: String?) {
+        sendNotification(body: "Saved: \(name ?? URL(fileURLWithPath: path).lastPathComponent)", filePath: path)
+    }
+
+    private func sendNotification(body: String, filePath: String?) {
         let content = UNMutableNotificationContent()
         content.title = "Team Recorder"
-        content.body = "Saved: \(name ?? URL(fileURLWithPath: path).lastPathComponent)"
+        content.body = body
         content.sound = .default
-        content.userInfo = ["filePath": path]
+        if let filePath { content.userInfo = ["filePath": filePath] }
         let request = UNNotificationRequest(
             identifier: "team-recorder-saved-\(UUID().uuidString)",
             content: content,
