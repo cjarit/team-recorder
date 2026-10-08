@@ -365,6 +365,8 @@ Full cases: `plan/LESSONS.md` → v1.2.4.
 - DO check any "file is recoverable/playable" claim by decoding the full length (`ffmpeg -f null`), not with ffprobe's header duration.
 - DON'T call AVAudioEngine off `micQ`, and don't wait on it unbounded (see Swift section).
 - Reinstalling the `.app` resets permissions: plan one install per test round, not one per fix.
+- DO run `codesign -dr -` on the installed app and `security find-identity -v -p codesigning` before touching install/permission UX — the re-grant pain is the ad-hoc cdhash identity (see `plan/v2.0-plan.md` §2).
+- DO measure an audio complaint on existing recordings (`plan/LESSONS.md` v2.0 planning #1) before ranking fixes.
 
 ### General (propose moving to global CLAUDE.md at project end)
 - A PoC gate must create the failure condition itself, not only the happy path.

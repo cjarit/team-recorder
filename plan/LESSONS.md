@@ -71,3 +71,31 @@ Each item: principle / case / trigger / action / scope.
 - Sampling the live stuck process (`sample <pid>`) plus the thread's silence in `log show` turned a hypothesis into proof.
 - A 20-line experiment proved that `cancelWriting()` deletes the output file, before we relied on it.
 - Asking the user one decisive question with a crafted test file (a 2-track NotebookLM test) settled a product question in 5 minutes.
+
+---
+
+## v2.0 planning — 2026-10-08
+
+Each item: principle / case / trigger / action / scope.
+
+1. **Measure a reported quality complaint against the artifacts you already have before choosing a fix.**
+   - Case: "echo" feedback arrived with no file. Cross-correlating system vs mic track on the owner's own dual-track recordings (28–29 Sep) gave max 0.04 — no speaker bleed. That relocated the problem to the reporter's setup (speakers + MacBook mic) instead of a guessed audio-path change. Script: scratchpad `echo/xcorr.py`, to be moved to `scripts/` when Phase 6 runs.
+   - Trigger: a user-reported audio/quality complaint, no sample attached.
+   - Action: write a ≤40-line measurement on existing recordings first; report the negative result with numbers; only then rank fixes.
+   - Scope: any agent work.
+
+2. **When the pain is "we have to re-grant permissions after every install", read the installed artifact's identity before designing installer UX.**
+   - Case: `codesign -dr - /Applications/TeamRecorderBar.app` → `designated => cdhash H"…"`, `Signature=adhoc`. The fix is a stable signing identity (D-1), not a smarter setup window. `security find-identity -v -p codesigning` → 0 identities confirmed nothing existed to reuse.
+   - Trigger: a request worded as "easier install", "clean reinstall", or "permissions reset again".
+   - Action: run `codesign -dr -` and `security find-identity` first; put the output in the plan's evidence table.
+   - Scope: this project and any macOS app work.
+
+3. **`git status` is part of orientation on a shared repo — another session may already have built part of the plan.**
+   - Case: an uncommitted `PopoverView.swift` + 114-line `StatusBarController` diff from a parallel session was found only because the owner mentioned it; it changed Phase 3 from "build" to "fix two contrast issues on device".
+   - Trigger: start of a planning session; working tree not clean.
+   - Action: list modified/untracked files and read their purpose before writing phases.
+   - Scope: any agent work.
+
+**Strengths (keep doing):**
+- One grill question per turn, each with a recommended answer and the tension stated: 7 decisions settled in 6 turns; the owner took 4 recommendations as-is and modified 2 (hybrid popover+window; PoC B inside v2.0). When one answer settles two questions (macOS floor + release line), accept it and move on — don't re-ask.
+- Advisor passes before and after the plan each added concrete gate conditions (teammate-Mac cert test, stale TCC row, tools-version 6.0) that the first draft lacked.
