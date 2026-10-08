@@ -4,7 +4,7 @@ import EventKit
 import Foundation
 
 /// Permission status for a single system resource.
-enum PermissionStatus { case granted, denied, undetermined }
+enum PermissionStatus { case granted, denied, undetermined, skipped }
 
 /// Static helpers to check and request macOS permissions needed by Team Recorder.
 /// All request functions call back on the main thread.
@@ -51,7 +51,19 @@ struct PermissionChecker {
 
     /// Calendar authorization status. Does NOT request access.
     /// Handles macOS 14 .fullAccess / .writeOnly with #available guard.
+    /// ผู้ใช้เลือกข้ามขั้น Calendar ใน Setup (org บล็อก calendar) — ถือว่าไม่ขาด ไม่เตือน
+    static var calendarSkipped: Bool {
+        get { UserDefaults.standard.bool(forKey: "calendarSkipped") }
+        set { UserDefaults.standard.set(newValue, forKey: "calendarSkipped") }
+    }
+
     static func calendar() -> PermissionStatus {
+        let real = calendarRaw()
+        if real != .granted && calendarSkipped { return .skipped }
+        return real
+    }
+
+    private static func calendarRaw() -> PermissionStatus {
         let status = EKEventStore.authorizationStatus(for: .event)
         if #available(macOS 14.0, *) {
             switch status {

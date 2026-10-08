@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         NSApp.setActivationPolicy(.accessory)
         configureNotifications()
         PermissionChecker.writeSnapshot()
+        healAfterVersionChange()
 
         statusBarController = StatusBarController()
 
@@ -64,6 +65,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if response == .alertSecondButtonReturn {
             SetupWindowController.shared.show()
         }
+    }
+
+    /// FR-UPG-001: เวอร์ชันเปลี่ยน → หยุด watcher ของ bundle เก่า, ล้าง status/PID ค้าง, จำเวอร์ชันใหม่
+    /// settings (.env, trackedCalendarIds, Launch at Login) ไม่ถูกแตะ
+    private func healAfterVersionChange() {
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let last = UserDefaults.standard.string(forKey: "lastRunVersion")
+        guard last != current else { return }
+        if UserDefaults.standard.bool(forKey: "setupCompleted") {
+            WatcherManager.shared.terminateStaleBundleWatcher()
+            // เคย setup แล้วแต่สิทธิ์หาย = ย้ายมาจาก build ad-hoc (v1.2.x) → แถวเก่าค้างใน System Settings
+            if PermissionChecker.screenRecording() != .granted {
+                SetupWindowController.shared.upgradeStaleGrantLikely = true
+            }
+        }
+        NSLog("[TeamRecorderBar] version \(last ?? "none") → \(current)")
+        UserDefaults.standard.set(current, forKey: "lastRunVersion")
     }
 
     private func autoStartOrShowSetup() {

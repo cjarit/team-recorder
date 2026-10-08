@@ -75,3 +75,42 @@ CDHash cycle3: CDHash=19c912edbc3506b1f7c4056327213ed084d1f1ed
 ```
 
 **Result: PASS** — 3 cert cycles (CDHash 719e3a…, 19c912…, f1eccd…) all granted with no user action; ad-hoc control lost Screen Recording and reset Mic/Calendar.
+## Phase 2 upgrade: orphan watcher + first launch of self-heal build — 2026-10-08 15:12
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:12:23",
+  "version" : "2.0.0-dev"
+}
+```
+
+## Phase 2 upgrade retest (after wait-for-exit fix) — 2026-10-08 15:13
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:13:20",
+  "version" : "2.0.0-dev"
+}
+```
+
+## Phase 2 upgrade: orphan watcher + forced version change — 2026-10-08 15:15
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:15:40",
+  "version" : "2.0.0-dev"
+}
+```
+

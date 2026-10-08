@@ -199,12 +199,16 @@ struct PopoverView: View {
 
     private func permissionRow(_ title: String, _ status: PermissionStatus, _ pane: PermissionPane) -> some View {
         MenuRow(action: { actions.openPermission(pane) }) {
-            Image(systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                .foregroundStyle(status == .granted ? Color.green : Color.orange)
+            Image(systemName: status == .granted ? "checkmark.circle.fill"
+                              : status == .skipped ? "minus.circle" : "exclamationmark.circle.fill")
+                .foregroundStyle(status == .granted ? Color.green
+                                 : status == .skipped ? Color.secondary : Color.orange)
                 .frame(width: 16)
             Text(title)
             Spacer()
-            if status != .granted {
+            if status == .skipped {
+                Text("Skipped").foregroundStyle(.secondary)
+            } else if status != .granted {
                 Text("Allow…").foregroundStyle(Color.accentColor)
             }
         }

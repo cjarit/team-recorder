@@ -93,10 +93,15 @@ class WatcherManager {
         guard (try? p.run()) != nil else { return nil }
         p.waitUntilExit()
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // pgrep -f จับทุก process ที่ argv มีคำนี้ (เช่น shell ที่กำลังพิมพ์คำสั่ง tail/grep) —
+        // นับเฉพาะ process ที่ executable เป็น python จริง
         return out.split(separator: "\n")
             .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-            .first
             .map { pid_t($0) }
+            .first { pid in
+                let exe = processCommand(pid: pid).split(separator: " ").first.map(String.init) ?? ""
+                return exe.hasSuffix("python3") || exe.hasSuffix("/Python")
+            }
     }
 
     // MARK: — Start / Stop
@@ -198,6 +203,40 @@ class WatcherManager {
     /// kill a watcher that was started by Start Recorder.command or `make run`.
     func stopManagedOnly() {
         managedProcess?.terminate()
+    }
+
+    /// หลัง upgrade: watcher ของ bundle เก่า (watcher.pyz) อาจยังรันอยู่ถ้าแอปถูกแทนที่ทั้งที่เปิดอยู่
+    /// หยุดเฉพาะ watcher ที่มาจาก bundle (ไม่แตะ `make run` / teams_recorder_v2.py) แล้วล้าง state ค้าง
+    func terminateStaleBundleWatcher() {
+        if let pid = verifiedExternalPid(), processCommand(pid: pid).contains("watcher.pyz") {
+            kill(pid, SIGTERM)
+            // รอให้ตัวเก่าออกจริงก่อน (ไม่งั้น autoStart เห็นว่ายังรันอยู่ → ไม่เริ่มตัวใหม่, แล้วตัวเก่าเขียน idle ทับ)
+            let deadline = Date().addingTimeInterval(3)
+            while kill(pid, 0) == 0 && Date() < deadline { usleep(100_000) }
+            if kill(pid, 0) == 0 { kill(pid, SIGKILL); usleep(200_000) }
+            NSLog("[TeamRecorderBar] upgrade: stopped watcher from previous bundle (pid \(pid))")
+        }
+        for url in [WatcherManager.pidFileURL, WatcherManager.recorderPidFileURL,
+                    RecorderStatus.statusFileURL] {
+            removeStaleFile(url)
+        }
+    }
+
+    /// Uninstall… — stop the managed watcher, clear runtime state, keep .env and recordings,
+    /// reveal the recordings folder, move the app to Trash, quit.
+    func uninstall() {
+        stop()
+        let support = RecorderStatus.statusFileURL.deletingLastPathComponent()
+        for name in ["status.json", "team-recorder.pid", "recorder.pid", "levels.json",
+                     "permissions.json", "events-today.json"] {
+            removeStaleFile(support.appendingPathComponent(name))
+        }
+        let dir = recordingDirectory()
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dir.path)
+        NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, error in
+            if let error { NSLog("[TeamRecorderBar] uninstall: could not move app to Trash: \(error)") }
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     func toggle() {

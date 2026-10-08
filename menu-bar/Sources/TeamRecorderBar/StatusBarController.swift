@@ -231,6 +231,15 @@ class StatusBarController {
         launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
 
+        let uninstallItem = NSMenuItem(
+            title: "Uninstall Team Recorder…",
+            action: #selector(uninstallApp),
+            keyEquivalent: ""
+        )
+        uninstallItem.target = self
+        uninstallItem.image = Self.menuSymbol("trash")
+        menu.addItem(uninstallItem)
+
         menu.addItem(NSMenuItem(
             title: "Quit",
             action: #selector(NSApplication.terminate(_:)),
@@ -366,6 +375,20 @@ class StatusBarController {
             self?.statusItem.button?.appearsDisabled = false
             self?.refresh()
         }
+    }
+
+    @objc private func uninstallApp() {
+        let alert = NSAlert()
+        alert.messageText = "Uninstall Team Recorder?"
+        alert.informativeText = "The app will be moved to the Trash and the watcher stopped.\n\n"
+            + "Your recordings and settings are kept. macOS permissions stay listed in "
+            + "System Settings → Privacy & Security until you remove them yourself."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        WatcherManager.shared.uninstall()
     }
 
     @objc private func recoverRecorder() {
@@ -824,6 +847,7 @@ class StatusBarController {
         case .granted:      return "Calendar: OK"
         case .denied:       return "Calendar: No Access ⚠"
         case .undetermined: return "Calendar: Not Set Up ⚠"
+        case .skipped:      return "Calendar: Skipped"
         }
     }
 }

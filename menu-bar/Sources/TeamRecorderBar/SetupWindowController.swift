@@ -18,6 +18,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
     /// ป้องกัน recursion: windowWillClose → completeSetupAndStartWatcher → close → windowWillClose
     private var completingSetup = false
     private var screenRecordingRequestedThisSession = false
+    /// ตั้งโดย AppDelegate เมื่อเคย setup แล้วแต่ Screen Recording หาย = upgrade จาก build ad-hoc (v1.2.x)
+    var upgradeStaleGrantLikely = false
     private var icalBuddyProbeState: IcalBuddyProbeState = .notRun
 
     // UI refs — set in buildUI(), safe to use after init
@@ -311,6 +313,14 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// macOS เก็บแถวสิทธิ์ของ build เก่าไว้ (ติ๊กอยู่แต่ใช้ไม่ได้) หลัง identity เปลี่ยน — ต้องลบแล้วเพิ่มใหม่
+    static let staleGrantInstructions =
+          "You upgraded from an older version — macOS still lists the old app.\n"
+        + "1. Click \"Add Team Recorder to Screen Recording\" below\n"
+        + "2. In System Settings, select the existing TeamRecorderBar row and click −\n"
+        + "3. Click + and choose /Applications/TeamRecorderBar.app, turn it on\n"
+        + "4. Come back here and click \"Relaunch App\""
+
     // MARK: — Step rendering
 
     private func refreshStep() {
@@ -321,7 +331,8 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         iconLabel.stringValue         = info.icon
         titleLabel.stringValue        = info.title
         descLabel.stringValue         = info.desc
-        instructionsLabel.stringValue = info.instructions
+        instructionsLabel.stringValue = (currentStep == 0 && upgradeStaleGrantLikely)
+            ? Self.staleGrantInstructions : info.instructions
         continueButton.title          = isLast ? "Finish" : "Continue →"
         // Step 3 skip clarifies what skipping costs vs earlier steps
         skipButton.title = isLast ? "Use system permission only" : "Skip for Now"
@@ -358,6 +369,10 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
             statusDot.textColor    = .secondaryLabelColor
             statusDot.stringValue  = "○"
             statusText.stringValue = "Not yet requested"
+        case .skipped:
+            statusDot.textColor    = .secondaryLabelColor
+            statusDot.stringValue  = "○"
+            statusText.stringValue = "Skipped — recordings are named from the Teams window"
         }
 
         // Step 3 Calendar: overlay bridge probe state on the status text
@@ -514,6 +529,9 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
                 message: "Team Recorder cannot start until Screen Recording is granted and the app is relaunched."
             )
             return
+        }
+        if currentStep == steps.count - 1 && PermissionChecker.calendar() != .granted {
+            PermissionChecker.calendarSkipped = true
         }
         completeSetupAndStartWatcher(closeWindow: true)
     }

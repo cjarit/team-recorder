@@ -6,8 +6,9 @@ VERSION      = 2.0.0-dev
 # identity คงที่สำหรับ sign ทุก build (make cert สร้างครั้งเดียว) — ใช้ SIGN_ID=- เพื่อ ad-hoc (ทดสอบเท่านั้น)
 SIGN_ID     ?= Team Recorder Signing
 RELEASE_ZIP  = $(DIST_DIR)/TeamRecorderBar-v$(VERSION).zip
+RELEASE_DMG  = $(DIST_DIR)/TeamRecorderBar-v$(VERSION).dmg
 
-.PHONY: run test setup build-recorder doctor permissions stop index watcher-pyz menu-bar menu-bar-install release icon reset-setup uninstall clean-reinstall cert cert-check
+.PHONY: run test setup build-recorder doctor permissions stop index watcher-pyz menu-bar menu-bar-install release dmg icon reset-setup uninstall clean-reinstall cert cert-check
 
 run:
 	$(PYTHON) teams_recorder_v2.py
@@ -130,7 +131,18 @@ uninstall:
 
 clean-reinstall: uninstall menu-bar-install
 
-release: menu-bar
+dmg: menu-bar
+	@mkdir -p "$(DIST_DIR)"
+	@rm -rf "$(DIST_DIR)/dmg-staging" "$(RELEASE_DMG)"
+	@mkdir -p "$(DIST_DIR)/dmg-staging"
+	@cp -r "$(MENU_BAR_APP)" "$(DIST_DIR)/dmg-staging/"
+	@ln -s /Applications "$(DIST_DIR)/dmg-staging/Applications"
+	@hdiutil create -quiet -volname "Team Recorder" -srcfolder "$(DIST_DIR)/dmg-staging" \
+	    -ov -format UDZO "$(RELEASE_DMG)"
+	@rm -rf "$(DIST_DIR)/dmg-staging"
+	@echo "  ✓  $(RELEASE_DMG) ($$(du -sh '$(RELEASE_DMG)' | cut -f1))"
+
+release: menu-bar dmg
 	@echo "  ⏳  Building release v$(VERSION)..."
 	@mkdir -p "$(DIST_DIR)"
 	@rm -f "$(RELEASE_ZIP)"
