@@ -118,6 +118,18 @@ Exit code 3 after a completed stop (file already finalized) signals a planned re
 
 **`title` MUST go through the stdin of the already-recording process, never a second spawned `recorder --meeting-title` process** — a second process is a different ScreenCaptureKit client and interrupts the first one's SCStream. Confirmed by testing (v1.2.2): the already-recording process logged `SCStream stopped: application connection being interrupted` the moment a second process ran `--meeting-title` concurrently, with a clean control run when it didn't. `get_meeting_title_from_screen(proc)` in `teams_recorder_v2.py` sends `"title\n"` to the same `proc` used for `start`/`stop` for exactly this reason. The command is synchronous like `start`/`stop` — Python must read the `TITLE`/`TITLE_NONE` response before sending anything else; the single-threaded stdin read loop enforces this anyway. `title` can block for a few seconds (internal retry, see `captureMeetingTitle()` below) — this delays the next command Python sends (e.g. `stop`), never the actual audio pipeline.
 
+### Microphone path (v2.0): ScreenCaptureKit by default, AVAudioEngine as fallback
+
+Since v2.0 the mic is captured by the **same `SCStream`** as system audio (`cfg.captureMicrophone`,
+`.microphone` output on `writeQ`, `appendMicSCK`). It runs out-of-process in `replayd`, so a Bluetooth
+HFP⇄A2DP switch cannot block the recorder the way `AVAudioEngine` did (v1.2.4 incidents). Gate run
+2026-10-08 (`plan/phase5-bt-gate-log.md`): Meet-now join + leave with AirPods Max as the Teams mic and
+MacBook mic as system input — 60/60 s mic alive, max buffer gap 0.024 s, file decoded end to end.
+`MIC_PATH=engine` in `.env` restores the AVAudioEngine path for one release; `RECORD_MIC=0` records
+system audio only. The `micQ` rules below still apply to the engine path and must not be relaxed.
+`AUDIO_INPUT_DEVICE_UID` is passed as `microphoneCaptureDeviceID` on the SCK path (CoreAudio UID;
+unverified that every device type maps, so "Auto" is the tested configuration).
+
 ### Sidecar files (v2.0) — recorder → app, Python untouched
 
 | File | Writer | Reader | Content |

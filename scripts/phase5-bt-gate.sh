@@ -19,7 +19,7 @@ while [ "$(state | cut -d' ' -f1)" = "recording" ]; do
     read -r a g p <<<"$(python3 -I -c "import json,sys;d=json.load(open(sys.argv[1]));print(int(d['micAlive']), d.get('micMaxGap',0), d.get('micPath','?'))" "$SUP/levels.json" 2>/dev/null || echo "0 0 ?")"
     samples=$((samples+1)); path=$p
     if [ "$a" = "1" ]; then alive=$((alive+1)); else dead=$((dead+1)); fi
-    maxgap=$(python3 -I -c "print(max(float(sys.argv[1]), float(sys.argv[2])))" "$maxgap" "$g" 2>/dev/null || echo "$maxgap")
+    maxgap=$(python3 -I -c "import sys;print(max(float(sys.argv[1]), float(sys.argv[2])))" "$maxgap" "$g" 2>/dev/null || echo "$maxgap")
   else
     stale=$((stale+1))
   fi

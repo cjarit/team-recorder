@@ -187,3 +187,14 @@ Both events exactly align with `start` and `stop` which run AVAudioEngine setup/
 **PoC B (SCK captureMicrophone) deferred:** Macros 15+ has `SCStream.captureOption(.captureMicrophone)` — in-stream mic capture avoids the entire AVAudioEngine path and its HFP switch blocking. Built as a proof-of-concept in scratch but untested. Confidence in design is high, but the collision itself was never naturally reproduced (only via incident forensics + 350s kill test), so the real-world demand for PoC B is unknown. Deferred pending field feedback or a natural reproduction.
 
 **Process lesson repeats:** The 59-minute block (2026-09-29 14:00) was only discovered because the user reported it. No monitoring, no alerting — it lived in production silently until someone checked the menu bar after an hour. Confidence in v1.2.4 is high by design, but measure the real world too.
+
+---
+
+## 2026-10-08 — v2.0 decisions (Phases 0–5)
+
+- **Stable identity = self-signed certificate, not Developer ID (D-1).** Owner chose the free tier. Gate: 3 rebuild/reinstall cycles kept all TCC grants, ad-hoc control lost them, and a build installed with the certificate absent from the keychain kept them (teammate condition). Gatekeeper "Open Anyway" remains on first open. `plan/phase1-tcc-log.md`.
+- **Two release lines (D-5/D-6).** `release/1.x` = macOS 14, bug fixes only (v1.2.4 stays published). `main` = v2.x, macOS 15 floor, Swift tools 6.0 with language mode 5.
+- **Hybrid UI (D-2).** Popover for daily use, Settings/Status window for everything else, Finder for file management, Quit only on the menu-bar surfaces. Right-click menu reduced to 5 items.
+- **Speech check moves empty recordings to `Empty/`, never deletes (D-9).** Cutoff −45 dBFS / ratio 0.05 / only ≥ 180 s, from a 338-file calibration (`plan/phase3-speech-calibration.md`): −40 dBFS would have moved two long quiet meetings.
+- **Microphone via ScreenCaptureKit is the default (PoC B gate passed).** See CLAUDE.md "Microphone path". AVAudioEngine stays selectable (`MIC_PATH=engine`) for one release, then is a candidate for removal with its `micQ`/silence-fill/exit-3 machinery.
+- **Echo (D-4):** reproduce before fixing; SCK mic may change the picture, measured in Phase 6.

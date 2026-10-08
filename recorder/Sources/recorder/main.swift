@@ -47,9 +47,9 @@ private let kLevelsInterval: Double = 1
 private let kMicAliveWindow: Double = 2
 // RECORD_MIC=0 ใน .env (ส่งผ่าน environment จาก Python) = อัดเฉพาะเสียงระบบ ไม่เปิดไมค์เลย
 private let kRecordMic = ProcessInfo.processInfo.environment["RECORD_MIC"] != "0"
-// MIC_PATH=sck → ไมค์มาทาง ScreenCaptureKit (macOS 15+, out-of-process) แทน AVAudioEngine ที่ค้างตอนหูฟัง BT สลับโหมด
-// default ยังเป็น engine จนกว่า PoC B gate จะผ่าน (plan/v2.0-plan.md Phase 5)
-private let kMicPathSCK = ProcessInfo.processInfo.environment["MIC_PATH"] == "sck"
+// ไมค์มาทาง ScreenCaptureKit (macOS 15+, out-of-process) แทน AVAudioEngine ที่ค้างตอนหูฟัง BT สลับโหมด
+// default ตั้งแต่ v2.0 (BT gate ผ่าน 2026-10-08: 60/60 วิ ไมค์อยู่, gap สูงสุด 0.024 วิ) — MIC_PATH=engine คืนทางเดิมได้ 1 รุ่น
+private let kMicPathSCK = ProcessInfo.processInfo.environment["MIC_PATH"] != "engine"
 // speechRatio (--mixdown): สัดส่วน frame 100ms ที่ RMS > -45 dBFS — app ใช้ตัดสินว่าไฟล์ "ว่าง"
 // -45 เลือกจาก calibrate 338 ไฟล์ (plan/phase3-speech-calibration.md): -40 ทำให้ meeting เสียงเบาดูเหมือนว่าง
 private let kSpeechFrameSeconds: Double = 0.1
