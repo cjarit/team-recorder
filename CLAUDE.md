@@ -123,7 +123,7 @@ Exit code 3 after a completed stop (file already finalized) signals a planned re
 | File | Writer | Reader | Content |
 |------|--------|--------|---------|
 | `APP_SUPPORT_DIR/levels.json` | recorder, every 1 s while recording (`levelsQ`; accumulators on `writeQ`); deleted on stop | app popover meters + mic-silent alert | `{"ts","sysRms","micRms"` (dBFS, peak RMS of the last second, −120 = silence)`,"micAlive"` (mic buffer within 2 s)`,"micDevice","sysBuffers","sysDecoded"}` — app treats `ts` older than 3 s as "no data" |
-| `<recording>.m4a.meta.json` | `recorder --mixdown`, after the in-place replace succeeds | app (`scheduleSpeechCheck`, polls 2 s × 45) | `{"speechRatio","durationSec","mixedAt"}` — `speechRatio` = share of 100 ms frames whose RMS > `kSpeechFrameRms` on the 0.8/0.8 mixed signal; identical algorithm in `scripts/speech_ratio.py` (verified 0.2653 vs 0.2650 on a known file) |
+| `<recording>.m4a.meta.json` | `recorder --mixdown`, after the in-place replace succeeds | app (`scheduleSpeechCheck`, polls 2 s × 45) | `{"speechRatio","durationSec","mixedAt"}` — `speechRatio` = share of 100 ms frames whose RMS > `kSpeechFrameRms` (−45 dBFS, calibrated) on the 0.8/0.8 mixed signal; identical algorithm in `scripts/speech_ratio.py` (verified 0.2653 vs 0.2650 on a known file) |
 
 **Empty/ rule (app, `StatusBarController.speechMinRatio`):** a saved recording with `speechRatio` below the threshold **and** `durationSec ≥ 180` is moved to `<RECORDING_DIR>/Empty/` with its meta file and one notification. Files are never deleted. Short calls (< `MIN_DURATION`) keep the "Teams Call (Short)" rule and are never moved. Threshold calibration: `plan/phase3-speech-calibration.md`.
 

@@ -11,7 +11,7 @@ FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 SAMPLE_RATE = 16000
 FRAME = SAMPLE_RATE // 10
-THRESH_DBFS = -40.0
+THRESH_DBFS = -45.0
 MIX_GAIN = 0.8
 SKIP_MARKERS = ("INCOMPLETE", "(recovered)")
 

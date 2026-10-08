@@ -161,3 +161,185 @@ Not measured, out of scope: 5 `.mp3` files in the folder (e.g. `6CP Class Part 1
 - Name class is taken from the file name only; no calendar or log lookup was done to confirm how a name was assigned.
 - The 2-track mix is not clipped to [-1, 1]; clipping does not change frames near -40 dBFS.
 - Full per-file CSV: rerun `python3 -I scripts/speech_ratio.py "$HOME/Documents/Teams Recording" > out.csv`.
+
+---
+
+## Cutoff sensitivity: -40 vs -45 vs -50 dBFS (requested 2026-10-08)
+
+Same algorithm, only the frame cutoff changed (`python3 -I scripts/speech_ratio.py --cutoff -45|-50 <dir>`; default stays -40). Same 338 files as above; two runs in parallel, 8 min 33 s wall each. The -40 results are the section 1-5 numbers above. Two new files appeared in the folder between runs (`Teams Call (Short) - 15-56_08-10-2026.m4a`, `Teams Call (Short) - 15-57_08-10-2026.m4a`); they are excluded here so all three cutoffs cover identical files. Decode failures and skips are the same 6 and 4 as above. Spot check: `Weekly Sync 26 Aug 2026.m4a` at -40 re-ran to 0.022144, identical to the first run.
+
+'Empty' reference set = the 4 Named files that scored exactly 0.0000 at -40 (all 12 to 22 s). 'Real >= 180 s' = Named files with duration >= 180 s (n = 294).
+
+### Empty-reference files and the two long quiet meetings, by cutoff
+
+| file | duration | ratio at -40 | ratio at -45 | ratio at -50 |
+|---|---|---|---|---|
+| DX DSD - Design Operations - 16-00_07-08-2026.m4a | 0m15s | 0.0000 | 0.0000 | 0.1765 |
+| [Knowledge Transfer] Overview Bond & Corp Bond - 15-00_02-06-2026.m4a | 0m12s | 0.0000 | 0.0000 | 0.0000 |
+| [Sync] Design Principles - 14-00_20-07-2026.m4a | 0m22s | 0.0000 | 0.0047 | 0.0047 |
+| [UApp] Sync Onboarding with P'Pop - 14-58_22-07-2026.m4a | 0m12s | 0.0000 | 0.0000 | 0.0000 |
+| Weekly Sync 26 Aug 2026.m4a | 1h06m23s | 0.0221 | 0.2005 | 0.9643 |
+| UApp Requirement & Refinement - 15-13_02-07-2026.m4a | 1h54m11s | 0.0233 | 0.1108 | 0.3437 |
+
+### Cutoff -40 dBFS
+
+Bin table (338 files):
+
+| speechRatio bin | files | Short | Unnamed | Named |
+|---|---|---|---|---|
+| 0 - 0.01 | 4 | 0 | 0 | 4 |
+| 0.01 - 0.02 | 3 | 0 | 0 | 3 |
+| 0.02 - 0.05 | 10 | 0 | 0 | 10 |
+| 0.05 - 0.10 | 6 | 0 | 0 | 6 |
+| 0.10 - 0.20 | 3 | 1 | 0 | 2 |
+| 0.20 - 0.50 | 175 | 2 | 1 | 172 |
+| 0.50 - 1.00 | 137 | 5 | 3 | 129 |
+
+Files with ratio < 0.10 (23):
+
+| file | duration | ratio | class |
+|---|---|---|---|
+| DX DSD - Design Operations - 16-00_07-08-2026.m4a | 0m15s (15s) | 0.0000 | Named |
+| [Knowledge Transfer] Overview Bond & Corp Bond - 15-00_02-06-2026.m4a | 0m12s (12s) | 0.0000 | Named |
+| [Sync] Design Principles - 14-00_20-07-2026.m4a | 0m22s (22s) | 0.0000 | Named |
+| [UApp] Sync Onboarding with P'Pop - 14-58_22-07-2026.m4a | 0m12s (12s) | 0.0000 | Named |
+| DX Lead Discuss & Operations - 14-00_23-07-2026.m4a | 1m18s (78s) | 0.0129 | Named |
+| [Sync] Design Principles - 15-04_02-09-2026.m4a | 0m22s (22s) | 0.0137 | Named |
+| [Daily] Paotang Investment - 09-43_15-06-2026.m4a | 1m10s (70s) | 0.0186 | Named |
+| Weekly Sync 26 Aug 2026.m4a | 1h06m23s (3983s) | 0.0221 | Named |
+| [Daily] UApp - 09-57_21-09-2026.m4a | 1m11s (71s) | 0.0225 | Named |
+| DX DSD - Design Operations - 16-02_24-07-2026.m4a | 1m10s (70s) | 0.0228 | Named |
+| UApp Requirement & Refinement - 15-13_02-07-2026.m4a | 1h54m11s (6851s) | 0.0233 | Named |
+| [Gold Wallet] UXUI Multiday (Design Update) - 15-59_27-05-2026.m4a | 1m10s (70s) | 0.0298 | Named |
+| [Daily] Paotang Investment - 14-33_08-10-2026.m4a | 0m15s (15s) | 0.0392 | Named |
+| [UApp] Monday Weekly Update - 10-59_06-07-2026.m4a | 0m12s (12s) | 0.0400 | Named |
+| [One on One] Pop - Mee - 15-00_01-09-2026.m4a | 0m34s (34s) | 0.0442 | Named |
+| DX Lead Discuss & Operations - 13-30_25-08-2026.m4a | 1m14s (74s) | 0.0448 | Named |
+| DX Lead Discuss & Operations - 16-02_31-08-2026.m4a | 0m12s (12s) | 0.0488 | Named |
+| DX DSD - Design Operations - 16-42_12-06-2026.m4a | 0m15s (15s) | 0.0584 | Named |
+| DX DSD - Design Operations - 16-06_07-08-2026.m4a | 0m12s (12s) | 0.0656 | Named |
+| Design Principle Skill Review.m4a | 1h26m10s (5170s) | 0.0726 | Named |
+| DX DSD - Design Operations - 16-49_12-06-2026.m4a | 0m31s (31s) | 0.0754 | Named |
+| DX Lead Discuss & Operations - 16-03_31-08-2026.m4a | 0m12s (12s) | 0.0894 | Named |
+| test - 18-39_25-05-2026.m4a | 0m15s (15s) | 0.0974 | Named |
+
+Thresholds (file moves when ratio < threshold; Short files are exempt under FR-VAD-003 but counted in 'moved overall' as flagged by the metric):
+
+| threshold | moved overall | of which >= 180 s | >= 180 s and Named (real meeting) | >= 180 s and Short/Unnamed |
+|---|---|---|---|---|
+| 0.01 | 4 | 0 | 0 | 0 |
+| 0.02 | 7 | 0 | 0 | 0 |
+| 0.05 | 17 | 2 | 2 | 0 |
+
+### Cutoff -45 dBFS
+
+Bin table (338 files):
+
+| speechRatio bin | files | Short | Unnamed | Named |
+|---|---|---|---|---|
+| 0 - 0.01 | 4 | 0 | 0 | 4 |
+| 0.01 - 0.02 | 1 | 0 | 0 | 1 |
+| 0.02 - 0.05 | 4 | 0 | 0 | 4 |
+| 0.05 - 0.10 | 6 | 0 | 0 | 6 |
+| 0.10 - 0.20 | 8 | 1 | 0 | 7 |
+| 0.20 - 0.50 | 126 | 1 | 1 | 124 |
+| 0.50 - 1.00 | 189 | 6 | 3 | 180 |
+
+Files with ratio < 0.10 (15):
+
+| file | duration | ratio | class |
+|---|---|---|---|
+| DX DSD - Design Operations - 16-00_07-08-2026.m4a | 0m15s (15s) | 0.0000 | Named |
+| [Knowledge Transfer] Overview Bond & Corp Bond - 15-00_02-06-2026.m4a | 0m12s (12s) | 0.0000 | Named |
+| [UApp] Sync Onboarding with P'Pop - 14-58_22-07-2026.m4a | 0m12s (12s) | 0.0000 | Named |
+| [Sync] Design Principles - 14-00_20-07-2026.m4a | 0m22s (22s) | 0.0047 | Named |
+| DX Lead Discuss & Operations - 14-00_23-07-2026.m4a | 1m18s (78s) | 0.0155 | Named |
+| [Daily] UApp - 09-57_21-09-2026.m4a | 1m11s (71s) | 0.0351 | Named |
+| [Gold Wallet] UXUI Multiday (Design Update) - 15-59_27-05-2026.m4a | 1m10s (70s) | 0.0397 | Named |
+| [Daily] Paotang Investment - 09-43_15-06-2026.m4a | 1m10s (70s) | 0.0429 | Named |
+| [UApp] Monday Weekly Update - 10-59_06-07-2026.m4a | 0m12s (12s) | 0.0480 | Named |
+| DX DSD - Design Operations - 16-02_24-07-2026.m4a | 1m10s (70s) | 0.0513 | Named |
+| [Daily] Paotang Investment - 14-33_08-10-2026.m4a | 0m15s (15s) | 0.0523 | Named |
+| [One on One] Pop - Mee - 15-00_01-09-2026.m4a | 0m34s (34s) | 0.0531 | Named |
+| DX DSD - Design Operations - 16-42_12-06-2026.m4a | 0m15s (15s) | 0.0714 | Named |
+| DX DSD - Design Operations - 16-06_07-08-2026.m4a | 0m12s (12s) | 0.0738 | Named |
+| DX DSD - Design Operations - 16-49_12-06-2026.m4a | 0m31s (31s) | 0.0918 | Named |
+
+Thresholds (file moves when ratio < threshold; Short files are exempt under FR-VAD-003 but counted in 'moved overall' as flagged by the metric):
+
+| threshold | moved overall | of which >= 180 s | >= 180 s and Named (real meeting) | >= 180 s and Short/Unnamed |
+|---|---|---|---|---|
+| 0.01 | 4 | 0 | 0 | 0 |
+| 0.02 | 5 | 0 | 0 | 0 |
+| 0.05 | 9 | 0 | 0 | 0 |
+
+### Cutoff -50 dBFS
+
+Bin table (338 files):
+
+| speechRatio bin | files | Short | Unnamed | Named |
+|---|---|---|---|---|
+| 0 - 0.01 | 3 | 0 | 0 | 3 |
+| 0.01 - 0.02 | 0 | 0 | 0 | 0 |
+| 0.02 - 0.05 | 2 | 0 | 0 | 2 |
+| 0.05 - 0.10 | 5 | 0 | 0 | 5 |
+| 0.10 - 0.20 | 4 | 1 | 0 | 3 |
+| 0.20 - 0.50 | 103 | 0 | 1 | 102 |
+| 0.50 - 1.00 | 221 | 7 | 3 | 211 |
+
+Files with ratio < 0.10 (10):
+
+| file | duration | ratio | class |
+|---|---|---|---|
+| [Knowledge Transfer] Overview Bond & Corp Bond - 15-00_02-06-2026.m4a | 0m12s (12s) | 0.0000 | Named |
+| [UApp] Sync Onboarding with P'Pop - 14-58_22-07-2026.m4a | 0m12s (12s) | 0.0000 | Named |
+| [Sync] Design Principles - 14-00_20-07-2026.m4a | 0m22s (22s) | 0.0047 | Named |
+| DX Lead Discuss & Operations - 14-00_23-07-2026.m4a | 1m18s (78s) | 0.0206 | Named |
+| [Gold Wallet] UXUI Multiday (Design Update) - 15-59_27-05-2026.m4a | 1m10s (70s) | 0.0496 | Named |
+| [Daily] UApp - 09-57_21-09-2026.m4a | 1m11s (71s) | 0.0604 | Named |
+| [One on One] Pop - Mee - 15-00_01-09-2026.m4a | 0m34s (34s) | 0.0619 | Named |
+| DX DSD - Design Operations - 16-42_12-06-2026.m4a | 0m15s (15s) | 0.0909 | Named |
+| [Daily] Paotang Investment - 09-43_15-06-2026.m4a | 1m10s (70s) | 0.0929 | Named |
+| DX DSD - Design Operations - 16-49_12-06-2026.m4a | 0m31s (31s) | 0.0984 | Named |
+
+Thresholds (file moves when ratio < threshold; Short files are exempt under FR-VAD-003 but counted in 'moved overall' as flagged by the metric):
+
+| threshold | moved overall | of which >= 180 s | >= 180 s and Named (real meeting) | >= 180 s and Short/Unnamed |
+|---|---|---|---|---|
+| 0.01 | 3 | 0 | 0 | 0 |
+| 0.02 | 3 | 0 | 0 | 0 |
+| 0.05 | 5 | 0 | 0 | 0 |
+
+### Margin: highest-ratio empty file vs lowest-ratio real meeting >= 180 s
+
+| cutoff | highest empty-file ratio | lowest real >= 180 s ratio | absolute margin | lowest real >= 180 s file | duration |
+|---|---|---|---|---|---|
+| -40 | 0.0000 | 0.0221 | 0.0221 | Weekly Sync 26 Aug 2026.m4a | 1h06m23s |
+| -45 | 0.0047 | 0.1108 | 0.1061 | UApp Requirement & Refinement - 15-13_02-07-2026.m4a | 1h54m11s |
+| -50 | 0.1765 | 0.2305 | 0.0541 | Following DX Lead Discuss & Operations - 14-02_30-07-2026.m4a | 8m45s |
+
+Largest absolute margin: cutoff -45 dBFS (0.1061). Margin is computed only from the 4 empty-reference files, which were selected by their -40 score.
+
+
+### Lowest real (Named, >= 180 s) files per cutoff, for context
+
+| cutoff | lowest five, ratio (duration) |
+|---|---|
+| -40 | Weekly Sync 26 Aug 2026 0.0221 (66m); UApp Requirement & Refinement 0.0233 (114m); Design Principle Skill Review 0.0726 (86m); Following DX Lead Discuss & Operations - 14-02_30-07-2026 0.1348 (9m); [Daily] UApp - 09-58_31-07-2026 0.2324 (14m) |
+| -45 | UApp Requirement & Refinement 0.1108 (114m); Following DX Lead ... 14-02_30-07-2026 0.1807 (9m); Weekly Sync 26 Aug 2026 0.2005 (66m); Design Principle Skill Review 0.2363 (86m); [Daily] UApp - 09-58_31-07-2026 0.2684 (14m) |
+| -50 | Following DX Lead ... 14-02_30-07-2026 0.2305 (9m); [Daily] UApp - 09-58_31-07-2026 0.2911 (14m); [Sync] Design Principles - 11-02_23-07-2026 0.3182 (40m); [Daily] UApp - 09-59_28-09-2026 0.3184 (34m); [Daily] UApp - 10-01_11-09-2026 0.3194 (9m) |
+
+### Recommendation
+
+**Cutoff -45 dBFS, threshold 0.05.**
+
+- At -45 the empty-reference files score 0.0000, 0.0000, 0.0000 and 0.0047; the lowest real meeting >= 180 s scores 0.1108. The gap is 0.1061, the largest of the three cutoffs (-40: 0.0221; -50: 0.0541). Threshold 0.05 sits 0.0453 above the highest empty file and 0.0608 below the lowest real meeting.
+- At -45 with threshold 0.05: 9 files move, 0 are >= 180 s, 0 real meetings >= 180 s move. At -40 the same threshold moves 2 real meetings >= 180 s (66 min and 114 min).
+- At -50 one of the four empty-reference files (`DX DSD - Design Operations - 16-00_07-08-2026.m4a`, 15 s) scores 0.1765, so -50 no longer separates it from real meetings; the other three stay at 0.0000, 0.0000, 0.0047.
+- Threshold 0.10 at -45 is not recommended: the lowest real meeting is 0.1108, a 0.0108 margin, and it is a single file.
+
+Limits of this evidence:
+- The empty reference is 4 files of 12 to 22 s, chosen because they scored 0 at -40. No file was listened to. The margin is measured against those 4 only.
+- At -45, all 9 files under 0.05 are shorter than 180 s and carry real-meeting names (ratios 0.0000 to 0.0480 in the -45 table above). Whether they contain speech is not settled by these numbers; the three 0.0000 files and `UApp Requirement & Refinement` (0.1108) are the ones worth a listen.
+- The conclusion rests on one file for the real-side minimum (`UApp Requirement & Refinement - 15-13_02-07-2026.m4a`, 0.1108 at -45).
+- `kSpeechMinRatio` and the Swift cutoff constant must both change together; the spec text (-40, 0.05) is not updated by this run.

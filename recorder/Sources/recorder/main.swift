@@ -45,9 +45,10 @@ private let kMixdownTrackGain: Double = 0.8
 private let kAppSupportDir = NSString(string: "~/Library/Application Support/Team Recorder").expandingTildeInPath
 private let kLevelsInterval: Double = 1
 private let kMicAliveWindow: Double = 2
-// speechRatio (--mixdown): สัดส่วน frame 100ms ที่ RMS > -40 dBFS — app ใช้ตัดสินว่าไฟล์ "ว่าง"
+// speechRatio (--mixdown): สัดส่วน frame 100ms ที่ RMS > -45 dBFS — app ใช้ตัดสินว่าไฟล์ "ว่าง"
+// -45 เลือกจาก calibrate 338 ไฟล์ (plan/phase3-speech-calibration.md): -40 ทำให้ meeting เสียงเบาดูเหมือนว่าง
 private let kSpeechFrameSeconds: Double = 0.1
-private let kSpeechFrameRms: Float = 0.01
+private let kSpeechFrameRms: Float = 0.005623
 
 private let levelsTimeFmt: DateFormatter = {
     let f = DateFormatter()
