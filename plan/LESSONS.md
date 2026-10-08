@@ -99,3 +99,9 @@ Each item: principle / case / trigger / action / scope.
 **Strengths (keep doing):**
 - One grill question per turn, each with a recommended answer and the tension stated: 7 decisions settled in 6 turns; the owner took 4 recommendations as-is and modified 2 (hybrid popover+window; PoC B inside v2.0). When one answer settles two questions (macOS floor + release line), accept it and move on — don't re-ask.
 - Advisor passes before and after the plan each added concrete gate conditions (teammate-Mac cert test, stale TCC row, tools-version 6.0) that the first draft lacked.
+
+## v2.0 Phase 1 — 2026-10-08 (stable signing identity)
+
+1. **A gate that reads state from inside the app beats a screenshot.** Writing `permissions.json` at launch (non-prompting checks) made every cycle a one-command run with machine-readable evidence. Trigger: a test whose pass condition is "what System Settings shows for this app". Action: have the app write the state it sees. Scope: this project.
+2. **Snapshot-at-launch has a timing hole.** Cycle 1's file showed Mic/Calendar undetermined because the user granted them after the relaunch that wrote it; cycle 2 settled it. Trigger: reading a launch-time snapshot right after an interactive grant. Action: relaunch (or read the next cycle) before calling it a failure. Scope: this project.
+3. **The control run came free by using the current state.** The installed ad-hoc app already had grants, so "rebuild ad-hoc → lost" was the first run and cost no extra grant round; the cert build then needed exactly one. Trigger: a gate that needs a "fails as expected" control. Action: order runs so the existing state is the control. Scope: any agent work.

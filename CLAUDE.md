@@ -67,7 +67,9 @@ Team Recorder/
 make run                  # start recorder (Ctrl+C to stop)
 make test                 # run unit tests
 make setup                # first-time setup on a new machine
-make build-recorder       # rebuild Swift binary (needs Xcode CLT)
+make cert                 # one-time: create the "Team Recorder Signing" identity (then run the
+                          # partition-list command printed in README dev setup — needs your login password)
+make build-recorder       # rebuild Swift binary (needs Xcode CLT); signs with SIGN_ID
 make doctor               # read-only health check (permissions, disk, binary)
 make permissions          # open the System Settings panes for required permissions
 make stop                 # stop a running watcher (reads the PID file)
@@ -364,7 +366,8 @@ Full cases: `plan/LESSONS.md` → v1.2.4.
 - DO `sample <pid>` a stuck recorder before killing it. Thread silence in `log show --predicate 'processID == N'` plus the stack is proof; a timeline alone is a hypothesis.
 - DO check any "file is recoverable/playable" claim by decoding the full length (`ffmpeg -f null`), not with ffprobe's header duration.
 - DON'T call AVAudioEngine off `micQ`, and don't wait on it unbounded (see Swift section).
-- Reinstalling the `.app` resets permissions: plan one install per test round, not one per fix.
+- Reinstalling the `.app` reset permissions **while builds were ad-hoc** (v1.x). Since Phase 1 of v2.0 every build is signed with the `Team Recorder Signing` cert and grants persist (`plan/phase1-tcc-log.md`); `SIGN_ID=-` reintroduces the old behaviour — test builds only.
+- A key imported with `security import` needs `security set-key-partition-list -S apple-tool:,apple:,codesign: -s <login keychain>` once, run by the owner (login password). Without it codesign fails with `errSecInternalComponent` from a script.
 - DO run `codesign -dr -` on the installed app and `security find-identity -v -p codesigning` before touching install/permission UX — the re-grant pain is the ad-hoc cdhash identity (see `plan/v2.0-plan.md` §2).
 - DO measure an audio complaint on existing recordings (`plan/LESSONS.md` v2.0 planning #1) before ranking fixes.
 
