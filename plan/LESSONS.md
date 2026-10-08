@@ -126,3 +126,11 @@ Each item: principle / case / trigger / action / scope.
 2. **The PoC's helper carried the same bug as production.** `pcmBuffer(from:)` in `plan/poc-sck-mic` used a one-buffer AudioBufferList — the ArrayTooSmall failure found in Phase 3. Porting it unreviewed would have silently dropped mic audio. Trigger: copying a helper from a PoC. Action: re-derive it against the API contract, not the PoC. Scope: this project.
 
 **Strength:** the gate script samples the live sidecar, so the owner's two Meet-now runs produced machine-checked evidence without screenshots or log archaeology.
+
+## v2.0 Phase 6 — 2026-10-08 (echo = clock skew, not bleed)
+
+1. **When a reported artefact "grows", measure it as a function of time before naming a cause.** A single autocorrelation number hid it; per-window lags (146, 333, 663, 766, 983, 1153 ms) made the straight line obvious and pointed away from the speaker-bleed hypothesis. Trigger: a user says an effect gets worse during a session, or a measurement differs between the start and end of a file. Action: report the metric per window along the timeline, not one aggregate. Scope: any agent work.
+2. **Cross-check a track against the wall clock, not only against the other track.** The two tracks disagreed by 23 s; only the watcher log's start/stop times (2051 s) said which one was right (the mic). Trigger: two sources disagree. Action: find a third, independent reference before choosing. Scope: any agent work.
+3. **A design note that reads "X avoids drift" is a hypothesis.** The Thai comment "sample counting เลี่ยง host-clock drift" was the drift. Trigger: a comment justifying a non-obvious choice without a measurement next to it. Action: test the justification once with the instrument at hand before building on it. Scope: this project.
+
+**Strength:** the controlled test (synthetic speech via `say` through the speakers, two tracks kept) gave a reproducible before/after in under five minutes per run.

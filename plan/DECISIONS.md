@@ -198,3 +198,9 @@ Both events exactly align with `start` and `stop` which run AVAudioEngine setup/
 - **Speech check moves empty recordings to `Empty/`, never deletes (D-9).** Cutoff −45 dBFS / ratio 0.05 / only ≥ 180 s, from a 338-file calibration (`plan/phase3-speech-calibration.md`): −40 dBFS would have moved two long quiet meetings.
 - **Microphone via ScreenCaptureKit is the default (PoC B gate passed).** See CLAUDE.md "Microphone path". AVAudioEngine stays selectable (`MIC_PATH=engine`) for one release, then is a candidate for removal with its `micQ`/silence-fill/exit-3 machinery.
 - **Echo (D-4):** reproduce before fixing; SCK mic may change the picture, measured in Phase 6.
+
+### 2026-10-08 — Echo root cause (Phase 6): track positions were sample-counted
+
+- **Finding:** the reported echo ("one voice, then the same sentence again") was not primarily speaker bleed. ScreenCaptureKit's 16 kHz system audio delivers ~1–2 % fewer samples than real time, and both tracks were positioned by counting samples, so the system track drifted ahead of the mic track continuously. Evidence: 28 Sep 34-min file — system track 2028.5 s, mic track 2051.4 s, wall clock 09:59:23→10:33:34 = 2051 s; controlled 75 s test — offset 146→1153 ms. Every v1.x recording has this skew; it only became audible when the mic also carried a copy of the far end (speakers) and after v1.2.4's mixdown put both copies in one track.
+- **Decision:** position every buffer by its host-clock timestamp (SCK pts; AVAudioTime host time on the engine path) relative to the first system buffer, fill gaps with silence, trim overlaps. Verified on both mic paths (constant −45 ms / +80 ms, equal track lengths). Residual bleed stays; headphones guidance goes in the docs. Offline echo reduction (v2.1 candidate) is now much less important.
+- **Instrument kept:** `SKIP_MIXDOWN=1` in `.env` keeps two tracks; `scripts/xcorr.py` reports signed per-window offsets to ±2 s.

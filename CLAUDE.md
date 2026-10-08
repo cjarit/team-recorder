@@ -130,6 +130,20 @@ system audio only. The `micQ` rules below still apply to the engine path and mus
 `AUDIO_INPUT_DEVICE_UID` is passed as `microphoneCaptureDeviceID` on the SCK path (CoreAudio UID;
 unverified that every device type maps, so "Auto" is the tested configuration).
 
+### Track timing (v2.0): clock-anchored, never sample-counted
+
+Every buffer is placed at its host-clock timestamp relative to the first system-audio buffer
+(`clockStart`, `clockSamples()`, `appendAligned()`): a gap is filled with silence, an overlap is
+trimmed. **Do not go back to counting samples.** SCK's 16 kHz system audio is ~1–2 % short of real
+time; counting made the system track run ahead of the mic track by that much (28 Sep file: 2028 s
+vs 2051 s), which with speakers produced the "same sentence twice, a second apart" echo reported
+by the team. Measured 2026-10-08 with `scripts/xcorr.py` on two-track files (`SKIP_MIXDOWN=1`
+keeps them): before 146→1153 ms over 50 s; after a constant −45 ms (SCK mic) / +80 ms
+(AVAudioEngine mic) and equal track lengths. Residual speaker bleed is real (corr ≈ 0.3 with
+built-in speakers + mic) but at a fixed few-tens-of-ms offset it reads as room tone, not echo —
+headphones remain the advice. The SCK restart path no longer adds estimated gap frames; the
+timestamp jump after a restart is filled automatically.
+
 ### Sidecar files (v2.0) — recorder → app, Python untouched
 
 | File | Writer | Reader | Content |
@@ -260,7 +274,8 @@ kChannels                     = 1        // mono — Teams audio is mono in prac
 kFragmentSeconds              = 10       // m4a movieFragmentInterval; a killed recorder leaves a playable file up to the last fragment
 kTeardownTimeoutSeconds       = 5        // max wait for AVAudioEngine teardown before exit 3 (planned respawn)
 kExitTeardownHung             = 3        // exit code for planned respawn (matched to RESPAWN_EXIT_CODE in Python)
-kMicMaxLag                    = 1.0      // seconds — silence-fill the mic track from the system-audio clock to prevent fragment stalls
+kMicMaxLag                    = 1.0      // seconds — backstop: when the mic track trails system audio by > 2× this, fill silence up to 1× behind (so a resuming mic never overlaps)
+kAlignTolerance               = 0.1 s    // gap/overlap smaller than this is appended contiguously; larger → fill / trim
 ```
 
 `kSampleRate` is used in three places: `aacOutputSettings()`, `targetMicFmt`, and `cfg.sampleRate` in `buildSCKStream()`. Changing it automatically adjusts both the mic resampling path and the SCK delivery rate — no other edits needed.
