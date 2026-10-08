@@ -225,7 +225,13 @@ class WatcherManager {
     /// Uninstall… — stop the managed watcher, clear runtime state, keep .env and recordings,
     /// reveal the recordings folder, move the app to Trash, quit.
     func uninstall() {
+        let pid = managedProcess.map { pid_t($0.processIdentifier) } ?? verifiedExternalPid()
         stop()
+        // รอ watcher ออกจริงก่อนลบไฟล์ — ไม่งั้น Python เขียน status.json (idle) ทับหลังเราลบ
+        if let pid {
+            let deadline = Date().addingTimeInterval(3)
+            while kill(pid, 0) == 0 && Date() < deadline { usleep(100_000) }
+        }
         let support = RecorderStatus.statusFileURL.deletingLastPathComponent()
         for name in ["status.json", "team-recorder.pid", "recorder.pid", "levels.json",
                      "permissions.json", "events-today.json"] {

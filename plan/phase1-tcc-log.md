@@ -114,3 +114,16 @@ Signature size=1680 Authority=Team Recorder Signing
 }
 ```
 
+## reinstall after Uninstall… (6th cert install) — 2026-10-08 15:32
+```
+designated => identifier "com.team-recorder.menu-bar" and certificate leaf = H"3bc6cab381aa3542ef37b160db93e57400ead745"
+Signature size=1680 Authority=Team Recorder Signing 
+{
+  "calendar" : "granted",
+  "microphone" : "granted",
+  "screenRecording" : "granted",
+  "ts" : "2026-10-08T15:32:18",
+  "version" : "2.0.0-dev"
+}
+```
+
