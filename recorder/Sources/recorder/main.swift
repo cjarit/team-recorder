@@ -1502,8 +1502,83 @@ private func runStdinProtocol() {
 // พิสูจน์แล้ว 2026-09-29 ด้วยไฟล์ทดสอบ 2 track — จึงรวมเป็น track เดียวหลังอัดเสร็จ
 
 /// Replaces a multi-track recording with a single mixed mono track, in place.
+/// When the mic track carries a delayed copy of the system audio (speakers + built-in mic),
+/// the mic is ducked while the far end is loud, at the measured delay, before mixing.
 /// The original is kept untouched unless the mixed file decodes to the same duration.
 /// Exit 0 = mixed or already single-track, 1 = failed (original unchanged).
+private let kBleedProbeWindows = 12
+private let kBleedProbeSeconds = 10.0
+private let kBleedMaxLagSeconds = 2.0
+private let kBleedMinCorr: Float = 0.15
+private let kDuckGain: Float = 0.15
+private let kDuckThresholdRms: Float = 0.0056   // -45 dBFS
+private let kDuckFrame = Int(kSampleRate / 100)  // 10 ms
+
+private let mixPCMSettings: [String: Any] = [
+    AVFormatIDKey:             kAudioFormatLinearPCM,
+    AVSampleRateKey:           kSampleRate,
+    AVNumberOfChannelsKey:     kChannels,
+    AVLinearPCMBitDepthKey:    32,
+    AVLinearPCMIsFloatKey:     true,
+    AVLinearPCMIsBigEndianKey: false,
+    AVLinearPCMIsNonInterleaved: false]
+
+/// Reads one track (optionally a time range) as 16 kHz mono float samples via `body` per buffer.
+private func readTrack(_ asset: AVAsset, _ track: AVAssetTrack, range: CMTimeRange?,
+                       _ body: (UnsafePointer<Float>, Int) -> Void) throws {
+    let reader = try AVAssetReader(asset: asset)
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: mixPCMSettings)
+    reader.add(output)
+    if let range { reader.timeRange = range }
+    guard reader.startReading() else { throw reader.error ?? NSError(domain: "RecorderError", code: 2) }
+    while let sb = output.copyNextSampleBuffer() { withFloatSamples(sb, body) }
+    guard reader.status == .completed else { throw reader.error ?? NSError(domain: "RecorderError", code: 2) }
+}
+
+private func readTrackSamples(_ asset: AVAsset, _ track: AVAssetTrack, range: CMTimeRange) throws -> [Float] {
+    var out: [Float] = []
+    try readTrack(asset, track, range: range) { p, n in out.append(contentsOf: UnsafeBufferPointer(start: p, count: n)) }
+    return out
+}
+
+/// 10 ms RMS envelope of a whole track (tiny: 360k values per hour).
+private func rmsEnvelope(_ asset: AVAsset, _ track: AVAssetTrack) throws -> [Float] {
+    var env: [Float] = []
+    var acc: Float = 0, count = 0
+    try readTrack(asset, track, range: nil) { p, n in
+        for i in 0..<n {
+            acc += p[i] * p[i]; count += 1
+            if count == kDuckFrame { env.append((acc / Float(kDuckFrame)).squareRoot()); acc = 0; count = 0 }
+        }
+    }
+    return env
+}
+
+/// Best lag (samples, positive = mic later than system) and normalized correlation, on 8× decimated audio.
+private func bleedLag(sys: [Float], mic: [Float]) -> (lag: Int, corr: Float) {
+    let d = 8
+    func decimate(_ x: [Float]) -> [Float] {
+        var out = [Float](); out.reserveCapacity(x.count / d)
+        var i = 0
+        while i + d <= x.count { var s: Float = 0; for k in 0..<d { s += x[i + k] }; out.append(s / Float(d)); i += d }
+        let m = out.reduce(0, +) / Float(max(out.count, 1))
+        return out.map { $0 - m }
+    }
+    let a = decimate(sys), b = decimate(mic)
+    let maxLag = Int(kBleedMaxLagSeconds * kSampleRate) / d
+    let na = (a.reduce(0) { $0 + $1 * $1 }).squareRoot()
+    var best = (lag: 0, corr: Float(-1))
+    guard na > 0, b.count >= a.count + 2 * maxLag else { return best }
+    for lag in -maxLag...maxLag {
+        let off = maxLag + lag
+        var dot: Float = 0, nb: Float = 0
+        for i in 0..<a.count { let v = b[off + i]; dot += a[i] * v; nb += v * v }
+        let c = nb > 0 ? dot / (na * nb.squareRoot()) : 0
+        if c > best.corr { best = (lag * d, c) }
+    }
+    return best
+}
+
 func runMixdown(path: String) -> Int32 {
     let url   = URL(fileURLWithPath: path)
     let asset = AVURLAsset(url: url)
@@ -1527,24 +1602,45 @@ func runMixdown(path: String) -> Int32 {
     let tmp = dir.appendingPathComponent(".mixing-" + url.lastPathComponent)
     try? FileManager.default.removeItem(at: tmp)
     do {
-        let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderAudioMixOutput(audioTracks: tracks, audioSettings: [
-            AVFormatIDKey:            kAudioFormatLinearPCM,
-            AVSampleRateKey:          kSampleRate,
-            AVNumberOfChannelsKey:    kChannels,
-            AVLinearPCMBitDepthKey:   32,
-            AVLinearPCMIsFloatKey:    true,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false])
-        // ลดแต่ละฝั่งก่อนรวม — เสียงสองฝั่งดังพร้อมกันแล้วชนเพดาน (52 จุดใน 78s, ทดสอบ 2026-09-29)
-        let mix = AVMutableAudioMix()
-        mix.inputParameters = tracks.map { track in
-            let p = AVMutableAudioMixInputParameters(track: track)
-            p.setVolume(Float(kMixdownTrackGain), at: .zero)
-            return p
+        let sysTrack = tracks[0], micTrack = tracks[1]
+
+        // ─ 1. envelope ของเสียงระบบ + วัดเสียงรั่ว (ลำโพง → ไมค์) จาก probe window ที่เสียงระบบดัง
+        let env = try rmsEnvelope(asset, sysTrack)
+        let probeFrames = Int(kBleedProbeSeconds * 100)
+        let marginFrames = Int(kBleedMaxLagSeconds * 100)
+        var candidates: [Int] = []
+        if env.count > probeFrames + 2 * marginFrames {
+            let stride = max((env.count - probeFrames - 2 * marginFrames) / (kBleedProbeWindows * 3), probeFrames)
+            var f = marginFrames
+            while f + probeFrames + marginFrames <= env.count && candidates.count < kBleedProbeWindows {
+                let loud = env[f..<f + probeFrames].filter { $0 > kDuckThresholdRms }.count
+                if loud > probeFrames / 4 { candidates.append(f) }
+                f += stride
+            }
         }
-        output.audioMix = mix
-        reader.add(output)
+        var lags: [Int] = [], corrs: [Float] = []
+        for f in candidates {
+            let t0 = Double(f) / 100
+            let sysRange = CMTimeRange(start: CMTime(seconds: t0, preferredTimescale: 1000),
+                                       duration: CMTime(seconds: kBleedProbeSeconds, preferredTimescale: 1000))
+            let micRange = CMTimeRange(start: CMTime(seconds: t0 - kBleedMaxLagSeconds, preferredTimescale: 1000),
+                                       duration: CMTime(seconds: kBleedProbeSeconds + 2 * kBleedMaxLagSeconds, preferredTimescale: 1000))
+            let sys = try readTrackSamples(asset, sysTrack, range: sysRange)
+            let mic = try readTrackSamples(asset, micTrack, range: micRange)
+            let r = bleedLag(sys: sys, mic: mic)
+            if r.corr > 0 { lags.append(r.lag); corrs.append(r.corr) }
+        }
+        let sortedCorr = corrs.sorted(), sortedLag = lags.sorted()
+        let bleedCorr = sortedCorr.isEmpty ? 0 : sortedCorr[sortedCorr.count / 2]
+        let bleedLagSamples = sortedLag.isEmpty ? 0 : sortedLag[sortedLag.count / 2]
+        let duck = bleedCorr >= kBleedMinCorr
+        fputs("[mixdown] bleed probe windows=\(corrs.count) corr=\(bleedCorr) lag=\(bleedLagSamples) duck=\(duck)\n", stderr)
+
+        // ─ 2. stream ทั้งสอง track, หรี่ไมค์ตอนเสียงระบบ (ที่ t - lag) ดัง, รวม, เขียน
+        let reader = try AVAssetReader(asset: asset)
+        let sysOut = AVAssetReaderTrackOutput(track: sysTrack, outputSettings: mixPCMSettings)
+        let micOut = AVAssetReaderTrackOutput(track: micTrack, outputSettings: mixPCMSettings)
+        reader.add(sysOut); reader.add(micOut)
         let writer = try AVAssetWriter(outputURL: tmp, fileType: .m4a)
         let input  = AVAssetWriterInput(mediaType: .audio, outputSettings: aacOutputSettings())
         input.expectsMediaDataInRealTime = false
@@ -1553,30 +1649,68 @@ func runMixdown(path: String) -> Int32 {
             throw reader.error ?? writer.error ?? failure("could not start")
         }
         writer.startSession(atSourceTime: .zero)
-        // speechRatio — นับ frame 100ms ที่ดังกว่า -40 dBFS บนสัญญาณที่รวมแล้ว (สูตรเดียวกับ scripts/speech_ratio.py)
+
+        let outFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: kSampleRate,
+                                   channels: AVAudioChannelCount(kChannels), interleaved: false)!
+        var sysQ: [Float] = [], micQ: [Float] = []
+        var sysDone = false, micDone = false
+        var written: Int64 = 0
+        var gain: Float = 1
         let frameLen = Int(kSampleRate * kSpeechFrameSeconds)
         var frameSumSq: Double = 0, frameCount = 0, loudFrames = 0, totalFrames = 0
-        while let sb = output.copyNextSampleBuffer() {
-            withFloatSamples(sb) { p, n in
-                for i in 0..<n {
-                    frameSumSq += Double(p[i] * p[i])
-                    frameCount += 1
-                    if frameCount == frameLen {
-                        if (frameSumSq / Double(frameLen)).squareRoot() > Double(kSpeechFrameRms) { loudFrames += 1 }
-                        totalFrames += 1
-                        frameSumSq = 0
-                        frameCount = 0
-                    }
+        let chunk = Int(kSampleRate)
+        let g = Float(kMixdownTrackGain)
+
+        func pull(_ out: AVAssetReaderTrackOutput, into q: inout [Float], done: inout Bool) {
+            guard !done, let sb = out.copyNextSampleBuffer() else { done = true; return }
+            withFloatSamples(sb) { p, n in q.append(contentsOf: UnsafeBufferPointer(start: p, count: n)) }
+        }
+        func flush(_ count: Int) throws {
+            guard count > 0, let buf = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: AVAudioFrameCount(count)),
+                  let ch = buf.floatChannelData else { return }
+            buf.frameLength = AVAudioFrameCount(count)
+            var frame = 0
+            for i in 0..<count {
+                if i % kDuckFrame == 0 {
+                    let idx = (Int(written) + i - bleedLagSamples) / kDuckFrame
+                    let farLoud = duck && idx >= 0 && idx < env.count && env[idx] > kDuckThresholdRms
+                    let target: Float = farLoud ? kDuckGain : 1
+                    gain += (target - gain) * (target < gain ? 0.5 : 0.08)
+                    frame += 1
+                }
+                let sv = i < sysQ.count ? sysQ[i] : 0
+                let mv = i < micQ.count ? micQ[i] : 0
+                let v = g * sv + g * gain * mv
+                ch[0][i] = v
+                frameSumSq += Double(v * v); frameCount += 1
+                if frameCount == frameLen {
+                    if (frameSumSq / Double(frameLen)).squareRoot() > Double(kSpeechFrameRms) { loudFrames += 1 }
+                    totalFrames += 1; frameSumSq = 0; frameCount = 0
                 }
             }
+            _ = frame
             while !input.isReadyForMoreMediaData { usleep(2_000) }
-            guard input.append(sb) else { throw writer.error ?? failure("append failed") }
+            guard let sb = makeSampleBuffer(from: buf, pts: CMTime(value: written, timescale: CMTimeScale(kSampleRate))),
+                  input.append(sb) else { throw writer.error ?? failure("append failed") }
+            written += Int64(count)
+            sysQ.removeFirst(min(count, sysQ.count))
+            micQ.removeFirst(min(count, micQ.count))
         }
+
+        while !(sysDone && micDone) {
+            if sysQ.count < chunk { pull(sysOut, into: &sysQ, done: &sysDone) }
+            if micQ.count < chunk { pull(micOut, into: &micQ, done: &micDone) }
+            while sysQ.count >= chunk && micQ.count >= chunk { try flush(chunk) }
+            if (sysDone || micDone) && (sysQ.count >= chunk || micQ.count >= chunk) && !(sysQ.count >= chunk && micQ.count >= chunk) {
+                try flush(chunk)
+            }
+        }
+        try flush(max(sysQ.count, micQ.count))
         guard reader.status == .completed else { throw reader.error ?? failure("read incomplete") }
         input.markAsFinished()
         let done = DispatchSemaphore(value: 0)
         writer.finishWriting { done.signal() }
-        guard done.wait(timeout: .now() + 60) == .success, writer.status == .completed else {
+        guard done.wait(timeout: .now() + 120) == .success, writer.status == .completed else {
             throw writer.error ?? failure("finish failed")
         }
 
@@ -1592,6 +1726,9 @@ func runMixdown(path: String) -> Int32 {
             "speechRatio": totalFrames > 0 ? Double(loudFrames) / Double(totalFrames) : 0,
             "durationSec": srcDuration.seconds,
             "mixedAt":     levelsTimeFmt.string(from: Date()),
+            "bleedCorr":   Double(bleedCorr),
+            "bleedLagMs":  Double(bleedLagSamples) / kSampleRate * 1000,
+            "ducked":      duck,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: meta) {
             try? data.write(to: URL(fileURLWithPath: path + ".meta.json"), options: .atomic)
