@@ -134,3 +134,14 @@ Each item: principle / case / trigger / action / scope.
 3. **A design note that reads "X avoids drift" is a hypothesis.** The Thai comment "sample counting เลี่ยง host-clock drift" was the drift. Trigger: a comment justifying a non-obvious choice without a measurement next to it. Action: test the justification once with the instrument at hand before building on it. Scope: this project.
 
 **Strength:** the controlled test (synthetic speech via `say` through the speakers, two tracks kept) gave a reproducible before/after in under five minutes per run.
+
+## v2.0 Phase 7 — 2026-10-08 (release)
+
+1. **Give a docs agent the ground-truth files and ask it to list what it could not verify.** The Sonnet docs pass returned 10 explicit uncertainties; two were real gaps (popover permission rows always shown, unbound ⌘Q) and got fixed before release. Trigger: delegating user-facing docs. Action: brief with sources, forbid guessing, require a "claims I was unsure about" list. Scope: any agent work.
+
+**Candidates for the owner's global CLAUDE.md** (all occurred ≥ 2× in this project; see Phases 1–6):
+- A harness number that equals its initial value, or is cleaner than the dry run, is a harness bug until shown otherwise.
+- When a reported artefact "grows", report the metric per window along the timeline before naming a cause.
+- Emit received-vs-decoded counters next to any level/health value that can fail closed.
+- Cross-check against a third, independent reference (wall clock, log) when two sources disagree.
+- Order gate runs so the existing state is the control run.
