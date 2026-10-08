@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import SwiftUI
 import UserNotifications
 
 /// Owns the NSStatusItem and all menu interactions.
@@ -7,6 +8,9 @@ import UserNotifications
 /// and by a 5-second poll fallback for when the file doesn't exist yet.
 class StatusBarController {
     private let statusItem: NSStatusItem
+    private var menu: NSMenu!
+    private let popover = NSPopover()
+    private var hostingController: NSHostingController<PopoverView>!
 
     // Dynamically updated menu items
     private var statusLine:          NSMenuItem!
@@ -34,6 +38,7 @@ class StatusBarController {
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         buildMenu()
+        setupPopover()
         startWatching()
         refresh()
     }
@@ -232,7 +237,115 @@ class StatusBarController {
             keyEquivalent: "q"
         ))
 
+        self.menu = menu
+    }
+
+    // MARK: — Popover (left click) + full menu (right click)
+
+    private func setupPopover() {
+        hostingController = NSHostingController(rootView: PopoverView(snapshot: makeSnapshot(), actions: makeActions()))
+        hostingController.sizingOptions = .preferredContentSize
+        popover.contentViewController = hostingController
+        popover.behavior = .transient
+        popover.animates = true
+
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(handleStatusItemClick)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+    }
+
+    @objc private func handleStatusItemClick() {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showFullMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        refresh()
+        // LSUIElement app — activate so the transient popover closes on an outside click
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func showFullMenu() {
+        popover.performClose(nil)
         statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    /// Run an action after the popover closes, so alerts and pickers aren't hidden behind it.
+    private func closingPopover(_ action: @escaping () -> Void) -> () -> Void {
+        { [weak self] in
+            self?.popover.performClose(nil)
+            DispatchQueue.main.async(execute: action)
+        }
+    }
+
+    private func makeActions() -> PopoverActions {
+        PopoverActions(
+            startRecording:    { [weak self] in self?.startRecording() },
+            stopRecording:     { [weak self] in self?.stopRecording() },
+            toggleWatcher:     { [weak self] in self?.toggleWatcher() },
+            recover:           closingPopover { [weak self] in self?.recoverRecorder() },
+            showLaunchError:   closingPopover { [weak self] in self?.showLaunchWarning() },
+            openLastRecording: closingPopover { [weak self] in self?.openLastRecording() },
+            openFolder:        closingPopover { [weak self] in self?.openRecordingsFolder() },
+            openPermission:    { [weak self] pane in
+                self?.popover.performClose(nil)
+                self?.openPrefPane(pane.rawValue)
+            },
+            showFullMenu:      { [weak self] in DispatchQueue.main.async { self?.showFullMenu() } },
+            quit:              { NSApp.terminate(nil) }
+        )
+    }
+
+    private func makeSnapshot() -> PopoverSnapshot {
+        let s = currentStatus
+        let running = WatcherManager.shared.isRunning
+        let phase: PopoverSnapshot.Phase
+        if WatcherManager.shared.lastLaunchError != nil {
+            phase = .launchFailed
+        } else if isStaleRecordingState {
+            phase = .stale
+        } else {
+            switch s?.state {
+            case "recording": phase = .recording
+            case "stopping":  phase = .stopping
+            case "error":     phase = .error
+            default:          phase = running ? .waiting : .paused
+            }
+        }
+        var savedTime: String?
+        if let savedAt = s?.lastSavedAt, savedAt.count >= 16 {
+            savedTime = String(savedAt.dropFirst(11).prefix(5))
+        }
+        return PopoverSnapshot(
+            phase: phase,
+            meetingName: s?.meetingName,
+            startedAt: s?.startedAt.flatMap { DateFormatter.teamRecorderStatus.date(from: $0) },
+            errorText: s?.lastError,
+            watcherConfigured: WatcherManager.shared.watcherURL != nil,
+            lastRecordingName: s?.lastRecordingName,
+            lastSavedTime: savedTime,
+            lastFallbackReason: s?.lastFallbackReason,
+            canOpenLastRecording: s?.lastRecordingPath != nil,
+            screenRecording: PermissionChecker.screenRecording(),
+            microphone: PermissionChecker.microphone(),
+            calendar: PermissionChecker.calendar()
+        )
+    }
+
+    private func updatePopover() {
+        hostingController?.rootView = PopoverView(snapshot: makeSnapshot(), actions: makeActions())
     }
 
     // MARK: — Actions
@@ -371,6 +484,7 @@ class StatusBarController {
         updateLaunchAtLoginItem()
         updateLaunchWarning()
         updateIcon()
+        updatePopover()
         notifyIfRecordingSaved(previous: previousStatus, current: currentStatus)
     }
 
