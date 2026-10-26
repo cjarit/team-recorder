@@ -263,6 +263,25 @@ def test_get_teams_pid_cache_invalidated_when_any_pid_dies(monkeypatch):
     assert v2.get_teams_pids() == ["111", "333"]
 
 
+def test_get_teams_pids_picks_up_modulehost_spawned_after_first_resolve(monkeypatch):
+    monkeypatch.setattr(v2, "_pid_cache", "")
+    modulehost = {"pid": ""}
+
+    def fake_run(args, **kw):
+        if args[:2] == ["pgrep", "-x"]:
+            return _completed(stdout="111")
+        if args[:2] == ["pgrep", "-f"]:
+            return _completed(stdout=modulehost["pid"])
+        if args[0] == "kill":
+            return _completed(returncode=0)
+        return _completed()
+
+    monkeypatch.setattr(v2.subprocess, "run", fake_run)
+    assert v2.get_teams_pids() == ["111"]
+    modulehost["pid"] = "222"
+    assert v2.get_teams_pids() == ["111", "222"]
+
+
 # ─── Recording lifecycle tests ────────────────────────────────
 
 def test_start_recording_v2_sends_start_command(monkeypatch, tmp_path):

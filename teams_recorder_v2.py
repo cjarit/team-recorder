@@ -117,7 +117,8 @@ def get_teams_pids() -> "list[str]":
                for p in cached):
             return cached
     pids = _resolve_teams_pids()
-    _pid_cache = ",".join(pids)
+    # จำเฉพาะตอนเจอ ModuleHost ด้วย — Teams เปิดใหม่ ModuleHost ขึ้นช้ากว่า MSTeams ~7s
+    _pid_cache = ",".join(pids) if len(pids) > 1 else ""
     return pids
 
 
