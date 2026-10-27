@@ -1,5 +1,10 @@
 # Changelog — Team Recorder
 
+## v2.0.1 — 2026-10-27
+
+### Fix
+- Meetings were not detected after Teams was restarted while the watcher was running. `ModuleHost` (call-media UDP sockets) starts ~7 s after `MSTeams`; the PID cache held `MSTeams` only and never re-checked, so the UDP count stayed below `UDP_MEET_THRESH`. The cache is now kept only once `ModuleHost` is found. Seen 2026-10-26: 10:00 meeting not recorded (MSTeams alone 0 sockets, family 12). Test: `test_get_teams_pids_picks_up_modulehost_spawned_after_first_resolve`
+
 ## v2.0.0 — 2026-10-08
 
 ### Two release lines
